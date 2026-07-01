@@ -207,8 +207,14 @@ class PlutoFeatureBuilder(AbstractFeatureBuilder):
         else:
             scenario_manager = self.scenario_manager
 
-        route_roadblocks_ids = scenario_manager.get_route_roadblock_ids()
-        route_reference_path = scenario_manager.update_ego_path()
+        try:
+            route_roadblocks_ids = scenario_manager.get_route_roadblock_ids()
+            route_reference_path = scenario_manager.update_ego_path()
+        except (AttributeError, ValueError, KeyError) as e:
+            # Handle scenarios with invalid route information
+            # Return None to skip this scenario
+            raise RuntimeError(f"Failed to compute route for scenario: {str(e)}")
+        
         scenario_manager.update_obstacle_map(
             tracked_objects_list[present_idx], traffic_light_status
         )

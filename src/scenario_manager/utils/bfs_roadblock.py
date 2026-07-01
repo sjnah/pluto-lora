@@ -49,6 +49,11 @@ class BreadthFirstSearchRoadBlock:
         end_depth: int = 1
         depth: int = 1
 
+        # Check if start_edge is valid
+        if start_edge is None:
+            # Return empty path if start edge is invalid
+            return (([], []), False)
+        
         self._parent[start_edge.id + f"_{depth}"] = None
 
         while self._queue:

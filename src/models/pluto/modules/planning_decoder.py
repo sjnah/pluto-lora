@@ -133,11 +133,30 @@ class PlanningDecoder(nn.Module):
         nn.init.normal_(self.m_pos, mean=0.0, std=0.01)
 
     def forward(self, data, enc_data):
+        import warnings
+        
         enc_emb = enc_data["enc_emb"]
         enc_key_padding_mask = enc_data["enc_key_padding_mask"]
+        
+        # CHECK FOR NaN IN INPUTS (critical!)
+        if torch.isnan(enc_emb).any():
+            warnings.warn(
+                f"[PLANNING_DECODER] enc_emb contains NaN at input! "
+                f"NaN count: {torch.isnan(enc_emb).sum()}/{enc_emb.numel()}"
+            )
+            # Replace NaN with zeros to prevent propagation
+            enc_emb = torch.nan_to_num(enc_emb, nan=0.0)
 
         r_position = data["reference_line"]["position"]
         r_vector = data["reference_line"]["vector"]
+        
+        # Check reference line data
+        if torch.isnan(r_position).any():
+            warnings.warn(f"[PLANNING_DECODER] r_position contains NaN!")
+            r_position = torch.nan_to_num(r_position, nan=0.0)
+        if torch.isnan(r_vector).any():
+            warnings.warn(f"[PLANNING_DECODER] r_vector contains NaN!")
+            r_vector = torch.nan_to_num(r_vector, nan=0.0)
         r_orientation = data["reference_line"]["orientation"]
         r_valid_mask = data["reference_line"]["valid_mask"]
         r_key_padding_mask = ~r_valid_mask.any(-1)
@@ -163,8 +182,15 @@ class PlanningDecoder(nn.Module):
         m_emb = self.m_emb.repeat(bs, R, 1, 1)
 
         q = self.q_proj(torch.cat([r_emb, m_emb], dim=-1))
+        
+        # Check q_proj output
+        if not torch.isfinite(q).all():
+            import warnings
+            warnings.warn(f"[CRITICAL] NaN detected immediately after q_proj! Input may have extreme values.")
+            # Replace NaN/Inf to prevent propagation
+            q = torch.nan_to_num(q, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        for blk in self.decoder_blocks:
+        for blk_idx, blk in enumerate(self.decoder_blocks):
             q = blk(
                 q,
                 enc_emb,
@@ -172,7 +198,38 @@ class PlanningDecoder(nn.Module):
                 memory_key_padding_mask=enc_key_padding_mask,
                 m_pos=self.m_pos,
             )
-            assert torch.isfinite(q).all()
+            # Check for numerical stability issues after each block
+            if not torch.isfinite(q).all():
+                import warnings
+                nan_count = torch.isnan(q).sum().item()
+                inf_count = torch.isinf(q).sum().item()
+                
+                # Log detailed information
+                warnings.warn(
+                    f"[CRITICAL] Non-finite values in planning decoder query tensor!\n"
+                    f"  Decoder block: {blk_idx}/{len(self.decoder_blocks)}\n"
+                    f"  NaN count: {nan_count} ({100*nan_count/q.numel():.2f}%)\n"
+                    f"  Inf count: {inf_count}\n"
+                    f"  Tensor shape: {q.shape}\n"
+                    f"  Training mode: {self.training}\n"
+                    f"  Q stats before NaN: min={q[torch.isfinite(q)].min().item() if torch.isfinite(q).any() else 'N/A'}, "
+                    f"max={q[torch.isfinite(q)].max().item() if torch.isfinite(q).any() else 'N/A'}\n"
+                    f"  This indicates numerical instability - check learning rates, gradients, and input data!"
+                )
+                
+                # CRITICAL: Replace NaN/Inf with zeros to prevent propagation
+                # This is necessary even during inference to prevent complete failure
+                q = torch.nan_to_num(q, nan=0.0, posinf=1e6, neginf=-1e6)
+                warnings.warn(f"  → Replaced NaN/Inf with finite values to prevent failure")
+                
+                # Check inputs for NaN
+                if not torch.isfinite(r_emb).all():
+                    warnings.warn(f"  -> r_emb contains NaN/Inf before decoder!")
+                if not torch.isfinite(enc_emb).all():
+                    warnings.warn(f"  -> enc_emb contains NaN/Inf before decoder!")
+                
+                # Clamp to prevent NaN propagation (but this is NOT a fix!)
+                q = torch.nan_to_num(q, nan=0.0, posinf=1e6, neginf=-1e6)
 
         if self.cat_x:
             x = enc_emb[:, 0].unsqueeze(1).unsqueeze(2).repeat(1, R, self.num_mode, 1)

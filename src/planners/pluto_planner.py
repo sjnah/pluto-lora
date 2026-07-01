@@ -63,7 +63,17 @@ class PlutoPlanner(AbstractPlanner):
         self._imgs = []
         self._scenario = scenario
         if use_gpu:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # Check if CUDA is actually available (may not be in Ray workers)
+            if torch.cuda.is_available():
+                try:
+                    # Try to create a tensor on CUDA to verify it works
+                    _ = torch.zeros(1).cuda()
+                    self.device = torch.device("cuda")
+                except RuntimeError:
+                    # CUDA not actually available (e.g., in Ray worker)
+                    self.device = torch.device("cpu")
+            else:
+                self.device = torch.device("cpu")
         else:
             self.device = torch.device("cpu")
         self._use_prediction = use_prediction
@@ -121,10 +131,72 @@ class PlutoPlanner(AbstractPlanner):
         torch.set_grad_enabled(False)
 
         if self._planner_ckpt is not None:
-            self._planner.load_state_dict(load_checkpoint(self._planner_ckpt))
+            checkpoint_state = load_checkpoint(self._planner_ckpt, device=self.device)
+            
+            # Debug: Log checkpoint info
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Loading checkpoint from: {self._planner_ckpt}")
+            logger.debug(f"Checkpoint state dict has {len(checkpoint_state)} keys")
+            logger.debug(f"Model state dict has {len(self._planner.state_dict())} keys")
+            
+            # Use strict=False to allow missing keys (e.g., from LoRA merged checkpoints)
+            missing_keys, unexpected_keys = self._planner.load_state_dict(checkpoint_state, strict=False)
+            
+            # Filter out expected missing/unexpected keys for LoRA merged checkpoints
+            # These are typically from model structure differences (e.g., pos_emb vs lora_base_pos_emb)
+            # or from training-time only parameters that don't exist in inference model
+            if missing_keys:
+                # Check if this looks like a LoRA merged checkpoint issue
+                # Missing encoder_blocks keys are concerning, but other missing keys might be expected
+                encoder_missing = [k for k in missing_keys if 'encoder_blocks' in k]
+                other_missing = [k for k in missing_keys if 'encoder_blocks' not in k]
+                
+                if encoder_missing:
+                    # This is a real problem - encoder keys should be in merged checkpoint
+                    logger.error(f"❌ Missing encoder keys when loading checkpoint: {len(encoder_missing)} keys")
+                    logger.error(f"  This indicates a checkpoint format mismatch!")
+                    logger.error(f"  Missing keys (first 10): {encoder_missing[:10]}")
+                    logger.error(f"  Checkpoint path: {self._planner_ckpt}")
+                    logger.error(f"  This may indicate the checkpoint was not properly merged or has a different structure.")
+                elif other_missing:
+                    # Other missing keys (e.g., from model structure differences) are usually fine
+                    logger.debug(f"Missing non-encoder keys (likely expected): {len(other_missing)} keys")
+            
+            if unexpected_keys:
+                # Filter out expected unexpected keys (e.g., lora_base_pos_emb from training)
+                # These are typically from training-time only parameters
+                lora_base_keys = [k for k in unexpected_keys if 'lora_base' in k or ('pos_emb' in k and 'lora_' not in k)]
+                lora_prefixed_keys = [k for k in unexpected_keys if k.startswith('lora_')]
+                other_unexpected = [k for k in unexpected_keys if 'lora_base' not in k and not k.startswith('lora_')]
+                
+                if lora_prefixed_keys:
+                    # Keys with lora_ prefix suggest checkpoint was saved from a model with LoRA layers still active
+                    logger.warning(f"⚠️  Checkpoint contains LoRA-prefixed keys (suggests unmerged LoRA checkpoint): {len(lora_prefixed_keys)} keys")
+                    logger.warning(f"  First 5: {lora_prefixed_keys[:5]}")
+                    logger.warning(f"  This checkpoint may not be properly merged. Expected merged_final.ckpt from LoRA training.")
+                elif lora_base_keys:
+                    logger.debug(f"Unexpected LoRA/training keys (expected for merged checkpoints): {len(lora_base_keys)} keys")
+                
+                if other_unexpected:
+                    logger.warning(f"⚠️  Unexpected keys in checkpoint (will be ignored): {len(other_unexpected)} keys")
+                    if len(other_unexpected) <= 10:
+                        logger.warning(f"  Unexpected keys: {other_unexpected}")
+                    else:
+                        logger.warning(f"  Unexpected keys (first 10): {other_unexpected[:10]}...")
 
         self._planner.eval()
-        self._planner = self._planner.to(self.device)
+        # Move model to device, but fallback to CPU if CUDA fails (e.g., in Ray workers)
+        try:
+            self._planner = self._planner.to(self.device)
+        except RuntimeError as e:
+            if "CUDA" in str(e) or "cuda" in str(e) or "No CUDA GPUs" in str(e):
+                # Use debug level to avoid spam in Ray workers (this is expected behavior)
+                logger.debug(f"CUDA not available in Ray worker, using CPU instead: {e}")
+                self.device = torch.device("cpu")
+                self._planner = self._planner.to(self.device)
+            else:
+                raise
 
         self._initialization = initialization
 
@@ -214,9 +286,7 @@ class PlutoPlanner(AbstractPlanner):
             ),
             route_lane_dict=self._scenario_manager.get_route_lane_dicts(),
             drivable_area_map=self._scenario_manager.drivable_area_map,
-            baseline_path=self._get_ego_baseline_path(
-                self._scenario_manager.get_cached_reference_lines(), ego_state
-            ),
+            baseline_path=self._get_baseline_path_safe(ego_state),
         )
 
         final_scores = (
@@ -283,14 +353,32 @@ class PlutoPlanner(AbstractPlanner):
         sorted_idx = np.argsort(-probability)
         sorted_candidate_trajectories = candidate_trajectories[sorted_idx][: self._topk]
         sorted_probability = probability[sorted_idx][: self._topk]
-        sorted_probability = softmax(sorted_probability)
-
-        if ref_free_trajectory is not None:
-            sorted_candidate_trajectories = np.concatenate(
-                [sorted_candidate_trajectories, ref_free_trajectory[None, ...]],
-                axis=0,
-            )
-            sorted_probability = np.concatenate([sorted_probability, [0.25]], axis=0)
+        
+        # Handle empty candidate array
+        if len(sorted_probability) == 0:
+            # No candidates - use only ref_free_trajectory if available
+            if ref_free_trajectory is not None:
+                sorted_candidate_trajectories = ref_free_trajectory[None, ...]
+                sorted_probability = np.array([1.0])
+            else:
+                # Fallback: return a simple straight trajectory
+                T, C = candidate_trajectories.shape[1], candidate_trajectories.shape[2]
+                fallback_traj = np.zeros((1, T, C))
+                # Simple forward motion
+                for t in range(T):
+                    fallback_traj[0, t, 0] = t * 0.5  # 0.5m per step forward
+                sorted_candidate_trajectories = fallback_traj
+                sorted_probability = np.array([1.0])
+        else:
+            sorted_probability = softmax(sorted_probability)
+            
+            # Add ref_free_trajectory if available and not already used as fallback
+            if ref_free_trajectory is not None:
+                sorted_candidate_trajectories = np.concatenate(
+                    [sorted_candidate_trajectories, ref_free_trajectory[None, ...]],
+                    axis=0,
+                )
+                sorted_probability = np.concatenate([sorted_probability, [0.25]], axis=0)
 
         # to global
         origin = ego_state.rear_axle.array
@@ -375,6 +463,29 @@ class PlutoPlanner(AbstractPlanner):
             "predictions": predictions_global,
         }
 
+    def _get_baseline_path_safe(self, ego_state: EgoState):
+        """
+        Safely get baseline path, with fallback if reference lines are not cached.
+        """
+        try:
+            reference_lines = self._scenario_manager.get_cached_reference_lines()
+            return self._get_ego_baseline_path(reference_lines, ego_state)
+        except (ValueError, AttributeError):
+            # Reference lines not available - create simple straight baseline
+            ego_pos = ego_state.rear_axle.array
+            ego_heading = ego_state.rear_axle.heading
+            
+            # Create a simple straight line ahead of ego
+            length = 100.0  # 100m ahead
+            end_x = ego_pos[0] + length * np.cos(ego_heading)
+            end_y = ego_pos[1] + length * np.sin(ego_heading)
+            
+            baseline_path = shapely.LineString([
+                [ego_pos[0], ego_pos[1]],
+                [end_x, end_y]
+            ])
+            return baseline_path
+    
     def _get_ego_baseline_path(self, reference_lines, ego_state: EgoState):
         init_ref_points = np.array([r[0] for r in reference_lines], dtype=np.float64)
 

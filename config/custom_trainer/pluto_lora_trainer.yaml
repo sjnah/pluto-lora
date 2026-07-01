@@ -1,0 +1,38 @@
+_target_: src.models.pluto.pluto_lora_trainer.LoRALightningTrainer
+_convert_: "all"
+
+# Base model (same as pluto_trainer.yaml but with LoRA support)
+lr: ${lr}
+weight_decay: ${weight_decay}
+epochs: ${epochs}
+warmup_epochs: ${warmup_epochs}
+warmup_steps: ${warmup_steps}
+
+# LoRA-specific configuration
+lora_enabled: ${lora.enabled}
+lora_rank: ${lora.rank}
+lora_alpha: ${lora.alpha}
+lora_dropout: ${lora.dropout}
+lora_lr: ${lora.lora_lr}
+policy_head_lr: ${lora.policy_head_lr}
+trainable_modules: ${lora.trainable_modules}
+ultra_minimal: ${lora.ultra_minimal}
+is_curriculum_stage: ${oc.select:lora.is_curriculum_stage,false}
+
+# Stability controls
+gradient_clip_val: ${gradient_clip_val}
+skip_nan_steps: ${skip_nan_steps}
+remove_invalid_goals: ${remove_invalid_goals}
+
+# Loss configuration
+use_collision_loss: ${lora.use_collision_loss}
+use_contrast_loss: ${lora.use_contrast_loss}
+regulate_yaw: ${lora.regulate_yaw}
+objective_aggregate_mode: ${objective_aggregate_mode}
+weight_reg_loss: ${model.loss.weight_reg_loss}
+weight_cls_loss: ${model.loss.weight_cls_loss}
+weight_prediction_loss: ${model.loss.weight_prediction_loss}
+weight_collision_loss: ${model.loss.weight_collision_loss}
+weight_contrastive_loss: ${model.loss.weight_contrastive_loss}
+weight_ref_free_reg_loss: ${model.loss.weight_ref_free_reg_loss}
+weight_auxiliary: ${model.loss.weight_auxiliary}

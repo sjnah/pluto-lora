@@ -55,7 +55,48 @@ def global_trajectory_to_states(
     return agent_states
 
 
-def load_checkpoint(checkpoint: str):
-    ckpt = torch.load(checkpoint, map_location=torch.device("cpu"))
-    state_dict = {k.replace("model.", ""): v for k, v in ckpt["state_dict"].items()}
+def load_checkpoint(checkpoint: str, device=None):
+    """
+    Load checkpoint from file.
+    :param checkpoint: path to checkpoint file (can be relative or absolute)
+    :param device: device to load checkpoint to (None = default behavior)
+    :return: state dict
+    """
+    import os
+    # Convert to absolute path if relative
+    if not os.path.isabs(checkpoint):
+        # Try relative to current working directory first
+        if os.path.exists(checkpoint):
+            checkpoint = os.path.abspath(checkpoint)
+        else:
+            # Try relative to pluto directory
+            pluto_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            alt_path = os.path.join(pluto_dir, checkpoint)
+            if os.path.exists(alt_path):
+                checkpoint = alt_path
+            else:
+                # Last resort: try as-is (will raise FileNotFoundError if doesn't exist)
+                checkpoint = os.path.abspath(checkpoint)
+    
+    if device is None:
+        # Auto-detect: use GPU if available
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    if not os.path.exists(checkpoint):
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+    
+    # Always load to CPU first to avoid CUDA issues in Ray workers
+    # Then move to target device if needed
+    ckpt = torch.load(checkpoint, map_location="cpu")
+    
+    # Extract state dict and move to target device if it's CUDA and available
+    state_dict = {}
+    for k, v in ckpt["state_dict"].items():
+        key = k.replace("model.", "")
+        # Only move to CUDA if device is CUDA and CUDA is actually available
+        if device.type == "cuda" and torch.cuda.is_available():
+            state_dict[key] = v.to(device)
+        else:
+            state_dict[key] = v
+    
     return state_dict

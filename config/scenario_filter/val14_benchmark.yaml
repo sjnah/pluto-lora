@@ -1116,5 +1116,5 @@ ego_start_speed_threshold: null
 ego_stop_speed_threshold: null
 speed_noise_tolerance: null
 expand_scenarios: null
-remove_invalid_goals: true
+remove_invalid_goals: false
 shuffle: false

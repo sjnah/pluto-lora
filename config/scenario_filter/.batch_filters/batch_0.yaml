@@ -1,0 +1,63 @@
+_target_: nuplan.planning.scenario_builder.scenario_filter.ScenarioFilter
+_convert_: all
+scenario_types: null
+scenario_tokens:
+  - '00301fbca75b5ce4'
+  - '04a4a92fa9485364'
+  - '0a05b5cb5f6454b0'
+  - '0e230c7c31ee5638'
+  - '13eeb0a3d27454cd'
+  - '18438b7efd275e7a'
+  - '1e77a04e93c75ba5'
+  - '24574a3fa2ed576e'
+  - '29be0c5292695bb7'
+  - '2d974e401de45640'
+  - '317ff9c87dfb50ae'
+  - '36454c3b5d685c1f'
+  - '3bbe2bed3f6957ea'
+  - '4062618aa1345db6'
+  - '44a9f55424b0549d'
+  - '49503ce0e8f25ea7'
+  - '4f6461c570d2541d'
+  - '534858c9d60955fa'
+  - '57fb4bb3faec56f2'
+  - '5e401393da265fab'
+  - '631db6c25ffc54ad'
+  - '6aaaedc401ee5107'
+  - '6e357a01f9b0593e'
+  - '72f00754294d52f5'
+  - '77b6537477045172'
+  - '7e8525c900f15ec4'
+  - '834cf71739e65997'
+  - '89a6f0ca56e15d44'
+  - '8c571a72ea545228'
+  - '90e0a3e03ea6553b'
+  - '9735fbcb23e65f5e'
+  - '9d37c0d42e6e5db0'
+  - 'a51bd16d5f2b5a9b'
+  - 'a9773766c9ac51b8'
+  - 'af1ff1ba8bfa51ee'
+  - 'b3b660d07d0453cd'
+  - 'b7a0f107522e5c85'
+  - 'bd164fe385355150'
+  - 'c11cf83340ef57cf'
+  - 'c4874465ea1f5f0d'
+  - 'c86e8e693033576e'
+  - 'cd6bb9145f305d6f'
+  - 'd1cc883552ca57aa'
+  - 'd7f65016a6795d4e'
+  - 'df3209418f485407'
+  - 'e410e8eb7ebe5cba'
+  - 'e990429a8ff45085'
+  - 'edeab17e9e495644'
+  - 'f18b5cfbf3ac5e77'
+  - 'f46984fbdd745dca'
+log_names: null
+map_names: null
+num_scenarios_per_type: null
+limit_total_scenarios: null
+timestamp_threshold_s: null
+ego_displacement_minimum_m: null
+expand_scenarios: false
+remove_invalid_goals: false
+shuffle: false

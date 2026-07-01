@@ -1,0 +1,115 @@
+# @package _global_
+
+hydra:
+  searchpath:
+    - pkg://nuplan.planning.script.config.common
+    - pkg://nuplan.planning.script.config.training
+    - file:///home/sjnah/Workspace/development/scene-intrinsic-difficulty/pluto/config
+
+defaults:
+  - /data_augmentation: contrastive_scenario_generator
+  - /splitter: nuplan
+  - /model: pluto_model
+  - /scenario_filter: few_training_scenarios
+  - /scenario_builder: nuplan_mini
+  - /data_loader: default_data_loader
+  - /scenario_type_weights: default_scenario_type_weights
+  - /lightning: custom_lightning_head_only
+  - /worker: sequential
+  - _self_
+
+job_name: pluto_head_only_finetune
+py_func: train
+objective_aggregate_mode: mean
+experiment: pluto_head_only_finetune
+
+# Random seed
+seed: 42
+
+# Experiment grouping
+group: outputs
+
+# Experiment structure
+date_format: '%Y.%m.%d.%H.%M.%S'
+experiment_uid: ${now:${date_format}}
+experiment_name: training
+
+# Pretrained checkpoint path
+pretrained_ckpt: checkpoints/pluto_1M_aux_cil.ckpt
+
+# Output directory
+output_dir: ${group}/${experiment}
+metric_dir: metrics
+aggregator_metric_dir: aggregator_metric
+runner_report_file: runner_report.parquet
+
+# Checkpoint path
+checkpoint: null
+
+# Logging
+logger_level: info
+logger_format_string: null
+log_config: false
+
+# Execution
+max_number_of_workers: null
+enable_profiling: false
+gpu: true
+verbose: false
+
+# Distribution
+distribute_by_scenario: true
+distributed_timeout_seconds: 7200
+
+# Training hyperparameters
+lr: 3e-5  # Learning rate for policy head (head_lr ≤ 3e-5)
+weight_decay: 0.01
+epochs: 4
+warmup_epochs: 0  # Not used when warmup_steps is set
+warmup_steps: 300  # Warmup 300 steps
+
+# Cache settings
+cache:
+  cache_path: null
+  force_feature_computation: false
+  use_cache_without_dataset: false
+  cleanup_cache: false
+
+# WandB settings
+wandb:
+  mode: disabled
+  project: nuplan-pluto-head-only
+  name: ${experiment}
+  log_model: all
+  artifact: null
+  run_id: null
+
+# LoRA configuration (DISABLED)
+lora:
+  enabled: false  # LoRA completely disabled
+  rank: 4
+  alpha: 4.0
+  dropout: 0.05
+  
+  # Learning rates (not used when LoRA is disabled)
+  lora_lr: 1e-6
+  head_lr: 3e-5
+  policy_head_lr: 3e-5  # Head learning rate (≤ 3e-5)
+  
+  # Ultra-minimal mode: Only mlp.3 (last linear layer) of head modules is trainable
+  ultra_minimal: true  # Enable ultra-minimal fine-tuning (depth-first freezing)
+  
+  # Only planning decoder final heads are trainable (in ultra-minimal mode, only mlp.3)
+  trainable_modules:
+    - "planning_decoder.loc_head"      # Final trajectory output head
+    - "planning_decoder.yaw_head"
+    - "planning_decoder.vel_head"
+    - "planning_decoder.pi_head"
+  
+  # Loss configuration
+  use_collision_loss: true
+  use_contrast_loss: false
+  regulate_yaw: false
+  
+  # Save merged checkpoint at end of training (not applicable when LoRA is disabled)
+  save_merged: false

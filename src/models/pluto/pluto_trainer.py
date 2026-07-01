@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Dict, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import pytorch_lightning as pl
 import torch
@@ -37,6 +37,14 @@ class LightningTrainer(pl.LightningModule):
         use_contrast_loss=False,
         regulate_yaw=False,
         objective_aggregate_mode: str = "mean",
+        # Loss weights
+        weight_reg_loss: float = 1.0,
+        weight_cls_loss: float = 1.0,
+        weight_prediction_loss: float = 1.0,
+        weight_collision_loss: float = 1.0,
+        weight_contrastive_loss: float = 1.0,
+        weight_ref_free_reg_loss: float = 1.0,
+        weight_auxiliary: float = 1.0,  # Global multiplier for auxiliary losses (prediction, collision, contrastive)
     ) -> None:
         """
         Initializes the class.
@@ -63,6 +71,15 @@ class LightningTrainer(pl.LightningModule):
         self.use_collision_loss = use_collision_loss
         self.use_contrast_loss = use_contrast_loss
         self.regulate_yaw = regulate_yaw
+
+        # Loss weights
+        self.weight_reg_loss = weight_reg_loss
+        self.weight_cls_loss = weight_cls_loss
+        self.weight_prediction_loss = weight_prediction_loss
+        self.weight_collision_loss = weight_collision_loss
+        self.weight_contrastive_loss = weight_contrastive_loss
+        self.weight_ref_free_reg_loss = weight_ref_free_reg_loss
+        self.weight_auxiliary = weight_auxiliary  # Global multiplier for auxiliary losses
 
         self.radius = model.radius
         self.num_modes = model.num_modes
@@ -96,16 +113,37 @@ class LightningTrainer(pl.LightningModule):
 
         :param batch: input batch consisting of features and targets
         :param prefix: prefix prepended at each artifact's name during logging
-        :return: model's scalar loss
+        :return: model's scalar loss (or None to skip backward pass)
         """
         features, targets, scenarios = batch
+        
+        # Check for NaN in input features (critical for validation stability)
+        feature_data = features["feature"].data
+        if "agent" in feature_data and torch.isnan(feature_data["agent"]["position"]).any():
+            import warnings
+            warnings.warn(f"[TRAINER] NaN in input agent positions! Skipping batch in {prefix} mode.")
+            # Return zero loss to skip this problematic batch
+            return torch.tensor(0.0, device=feature_data["agent"]["position"].device, requires_grad=True)
+        
         res = self.forward(features["feature"].data)
 
         losses = self._compute_objectives(res, features["feature"].data)
         metrics = self._compute_metrics(res, features["feature"].data, prefix)
-        self._log_step(losses["loss"], losses, metrics, prefix)
+        
+        # CRITICAL: Check for NaN/inf in loss BEFORE backward pass
+        loss = losses["loss"]
+        if self.training:
+            if torch.isnan(loss) or torch.isinf(loss):
+                logger.error(
+                    f"[NAN/INF DETECTED] Skipping step at batch_idx={batch_idx if hasattr(self, 'current_batch_idx') else 'unknown'} "
+                    f"Loss value: {loss.item() if hasattr(loss, 'item') else loss}"
+                )
+                # Return None to skip backward pass (Lightning will skip backward if loss is None)
+                return None
+        
+        self._log_step(loss, losses, metrics, prefix)
 
-        return losses["loss"] if self.training else 0.0
+        return loss if self.training else 0.0
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
         bs, _, T, _ = res["prediction"].shape
@@ -115,11 +153,15 @@ class LightningTrainer(pl.LightningModule):
         else:
             train_num = bs
 
-        trajectory, probability, prediction = (
-            res["trajectory"][:train_num],
-            res["probability"][:train_num],
-            res["prediction"][:train_num],
-        )
+        # Handle case where trajectory might be None (e.g., during validation)
+        if res["trajectory"] is None:
+            trajectory = None
+            probability = None
+        else:
+            trajectory = res["trajectory"][:train_num]
+            probability = res["probability"][:train_num]
+        
+        prediction = res["prediction"][:train_num]
         ref_free_trajectory = res.get("ref_free_trajectory", None)
 
         targets_pos = data["agent"]["target"][:train_num]
@@ -138,9 +180,17 @@ class LightningTrainer(pl.LightningModule):
         )
 
         # planning loss
-        ego_reg_loss, ego_cls_loss, collision_loss = self.get_planning_loss(
-            data, trajectory, probability, valid_mask[:, 0], target[:, 0], train_num
-        )
+        if trajectory is not None and probability is not None:
+            ego_reg_loss, ego_cls_loss, collision_loss = self.get_planning_loss(
+                data, trajectory, probability, valid_mask[:, 0], target[:, 0], train_num
+            )
+        else:
+            # When trajectory is None (e.g., validation without reference lines),
+            # use zero losses
+            device = prediction.device
+            ego_reg_loss = torch.tensor(0.0, device=device)
+            ego_cls_loss = torch.tensor(0.0, device=device)
+            collision_loss = torch.tensor(0.0, device=device)
         if ref_free_trajectory is not None:
             ego_ref_free_reg_loss = F.smooth_l1_loss(
                 ref_free_trajectory[:train_num],
@@ -165,13 +215,24 @@ class LightningTrainer(pl.LightningModule):
         else:
             contrastive_loss = prediction_loss.new_zeros(1)
 
+        # Apply loss weights
+        # Main planning losses
+        weighted_reg_loss = self.weight_reg_loss * ego_reg_loss
+        weighted_cls_loss = self.weight_cls_loss * ego_cls_loss
+        weighted_ref_free_reg_loss = self.weight_ref_free_reg_loss * ego_ref_free_reg_loss
+        
+        # Auxiliary losses (multiplied by global auxiliary weight)
+        weighted_prediction_loss = self.weight_auxiliary * self.weight_prediction_loss * prediction_loss
+        weighted_contrastive_loss = self.weight_auxiliary * self.weight_contrastive_loss * contrastive_loss
+        weighted_collision_loss = self.weight_auxiliary * self.weight_collision_loss * collision_loss
+        
         loss = (
-            ego_reg_loss
-            + ego_cls_loss
-            + prediction_loss
-            + contrastive_loss
-            + collision_loss
-            + ego_ref_free_reg_loss
+            weighted_reg_loss
+            + weighted_cls_loss
+            + weighted_prediction_loss
+            + weighted_contrastive_loss
+            + weighted_collision_loss
+            + weighted_ref_free_reg_loss
         )
 
         return {
@@ -285,8 +346,14 @@ class LightningTrainer(pl.LightningModule):
         :param targets: ground truth targets
         :return: dictionary of metrics names and values
         """
-        # get top 6 modes
+        # Handle case where trajectory might be None
         trajectory, probability = res["trajectory"], res["probability"]
+        
+        if trajectory is None or probability is None:
+            # Return empty metrics when trajectory is not available
+            return {}
+        
+        # get top 6 modes
         r_padding_mask = ~data["reference_line"]["valid_mask"].any(-1)
         probability.masked_fill_(r_padding_mask.unsqueeze(-1), -1e6)
 
@@ -355,14 +422,16 @@ class LightningTrainer(pl.LightningModule):
 
     def training_step(
         self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], batch_idx: int
-    ) -> torch.Tensor:
+    ) -> Optional[torch.Tensor]:
         """
         Step called for each batch example during training.
 
         :param batch: example batch
         :param batch_idx: batch's index (unused)
-        :return: model's loss tensor
+        :return: model's loss tensor (or None to skip backward pass)
         """
+        # Store batch_idx for logging
+        self.current_batch_idx = batch_idx
         return self._step(batch, "train")
 
     def validation_step(
@@ -478,7 +547,77 @@ class LightningTrainer(pl.LightningModule):
 
         return [optimizer], [scheduler]
 
-    # def on_before_optimizer_step(self, optimizer) -> None:
+    def on_after_backward(self) -> None:
+        """
+        Called after backward pass but before optimizer step.
+        Check for NaN/inf in gradients and skip optimizer step if detected.
+        """
+        if not self.training:
+            return
+        
+        # Check all gradients for NaN/inf
+        has_nan_grad = False
+        has_inf_grad = False
+        nan_param_names = []
+        
+        for name, param in self.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                if torch.isnan(param.grad).any():
+                    has_nan_grad = True
+                    nan_param_names.append(f"{name} (NaN)")
+                if torch.isinf(param.grad).any():
+                    has_inf_grad = True
+                    nan_param_names.append(f"{name} (Inf)")
+        
+        if has_nan_grad or has_inf_grad:
+            logger.error(
+                f"[NAN/INF GRADIENT DETECTED] Skipping optimizer step!\n"
+                f"  NaN gradients: {has_nan_grad}\n"
+                f"  Inf gradients: {has_inf_grad}\n"
+                f"  Affected parameters: {nan_param_names[:5]}{'...' if len(nan_param_names) > 5 else ''}"
+            )
+            
+            # Zero out all gradients to prevent corruption
+            self.zero_grad(set_to_none=True)
+            
+            # Set flag to skip optimizer step
+            self._skip_optimizer_step = True
+        else:
+            self._skip_optimizer_step = False
+    
+    def on_before_optimizer_step(self, optimizer, optimizer_idx: int = 0) -> None:
+        """
+        Called before optimizer step.
+        Skip optimizer step if NaN/inf was detected in gradients.
+        """
+        if hasattr(self, '_skip_optimizer_step') and self._skip_optimizer_step:
+            logger.warning("[SKIP OPTIMIZER STEP] Skipping due to NaN/inf gradients detected in on_after_backward")
+            # Clear the flag
+            self._skip_optimizer_step = False
+            # Return False to skip optimizer step (Lightning will skip if this returns False)
+            return False
+    
+    # def on_before_optimizer_step_old(self, optimizer) -> None:
     #     for name, param in self.named_parameters():
     #         if param.grad is None:
     #             print("unused param", name)
+    
+    def save_lora_only(self, path: str):
+        """Save only LoRA parameters"""
+        import torch
+        lora_state_dict = {}
+        for name, param in self.model.named_parameters():
+            if 'lora' in name.lower():
+                lora_state_dict[name] = param.cpu()
+        torch.save(lora_state_dict, path)
+    
+    def merge_and_save(self, path: str):
+        """Merge LoRA weights into base model and save"""
+        import torch
+        from src.models.pluto.lora_layers import merge_lora_weights
+        
+        # Merge LoRA weights into the base model
+        merged_model = merge_lora_weights(self.model)
+        
+        # Save the merged model
+        torch.save({'state_dict': merged_model.state_dict()}, path)

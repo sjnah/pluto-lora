@@ -33,16 +33,25 @@ CONFIG_PATH = os.getenv("NUPLAN_HYDRA_CONFIG_PATH", "config/simulation")
 
 
 def print_simulation_results(file=None):
-    if file is not None:
-        df = pd.read_parquet(file)
-    else:
-        root = Path(os.getcwd()) / "aggregator_metric"
-        result = list(root.glob("*.parquet"))
-        result = max(result, key=lambda item: item.stat().st_ctime)
-        df = pd.read_parquet(result)
-    final_score = df[df["scenario"] == "final_score"]
-    final_score = final_score.to_dict(orient="records")[0]
-    pprint.PrettyPrinter(indent=4).pprint(final_score)
+    try:
+        if file is not None:
+            df = pd.read_parquet(file)
+        else:
+            root = Path(os.getcwd()) / "aggregator_metric"
+            result = list(root.glob("*.parquet"))
+            if not result:
+                logger.warning("No aggregator metric files found. Metrics may still be processing.")
+                return
+            result = max(result, key=lambda item: item.stat().st_ctime)
+            df = pd.read_parquet(result)
+        final_score = df[df["scenario"] == "final_score"]
+        if len(final_score) > 0:
+            final_score = final_score.to_dict(orient="records")[0]
+            pprint.PrettyPrinter(indent=4).pprint(final_score)
+        else:
+            logger.info("Simulation completed. Final score not yet aggregated.")
+    except Exception as e:
+        logger.warning(f"Could not print simulation results: {e}")
 
 
 def run_simulation(

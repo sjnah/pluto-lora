@@ -470,6 +470,9 @@ class NuplanScenarioRender:
                 )
 
     def _plot_mission_goal(self, ax, mission_goal: StateSE2):
+        # Skip plotting if mission_goal is None
+        if mission_goal is None:
+            return
         point = np.matmul(mission_goal.point.array - self.origin, self.rot_mat)
         ax.plot(point[0], point[1], marker="*", markersize=5, color="gold", zorder=6)
 

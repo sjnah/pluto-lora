@@ -1,0 +1,171 @@
+# @package _global_
+# PLUTO LoRA Fine-tuning Configuration
+# 
+# This config supports:
+# - Uniform fine-tuning (all difficulty levels mixed)
+# - Curriculum fine-tuning (3-stage progressive training)
+# - Encoder-only LoRA + ultra-minimal head fine-tuning
+
+hydra:
+  searchpath:
+    - pkg://nuplan.planning.script.config.common
+    - pkg://nuplan.planning.script.config.training
+    - file:///home/sjnah/Workspace/development/scene-intrinsic-difficulty/pluto/config
+
+defaults:
+  - /data_augmentation: contrastive_scenario_generator
+  - /splitter: nuplan
+  - /model: pluto_model
+  - /scenario_filter: uniform_train_all  # Default, will be overridden by command line
+  - /scenario_builder: nuplan_mini
+  - /data_loader: default_data_loader
+  - /scenario_type_weights: default_scenario_type_weights
+  - /custom_trainer: pluto_lora_trainer
+  - /lightning: custom_lightning
+  - /worker: sequential
+  - _self_
+
+job_name: pluto_lora_finetune
+py_func: train
+objective_aggregate_mode: mean
+experiment: lora_finetune
+
+# Random seed
+seed: 42
+
+# Experiment grouping
+group: outputs
+
+# Experiment structure
+date_format: '%Y.%m.%d.%H.%M.%S'
+experiment_uid: ${now:${date_format}}
+experiment_name: training
+
+# Training mode: "uniform" or "curriculum"
+train_mode: uniform
+
+# LoRA configuration
+lora:
+  enabled: true
+  rank: 8
+  alpha: 16.0
+  dropout: 0.05
+  lora_lr: 1e-5
+  head_lr: 1e-5
+  policy_head_lr: 1e-5  # Alias for head_lr (backward compatibility)
+  ultra_minimal: true
+  trainable_modules: []
+  save_merged: true
+  use_collision_loss: true
+  use_contrast_loss: false
+  regulate_yaw: false
+
+# Training hyperparameters
+lr: 1e-5
+weight_decay: 0.01
+epochs: 5
+warmup_epochs: 0
+warmup_steps: 300
+
+# Training stability
+gradient_clip_val: 1.0
+skip_nan_steps: true
+remove_invalid_goals: false
+
+# Loss weights configuration
+# These weights control the relative importance of different loss components
+model:
+  loss:
+    weight_reg_loss: 1.0          # Regression loss for ego trajectory
+    weight_cls_loss: 1.0           # Classification loss for mode selection
+    weight_prediction_loss: 1.0    # Prediction loss for other agents
+    weight_collision_loss: 1.0     # Collision loss
+    weight_contrastive_loss: 1.0   # Contrastive loss (if enabled)
+    weight_ref_free_reg_loss: 1.0  # Reference-free trajectory regression loss
+    weight_auxiliary: 1.0          # Global multiplier for auxiliary losses (prediction, collision, contrastive)
+                                   # This is a convenient way to scale all auxiliary losses together
+
+# Data configuration (semantic placeholders)
+# Actual split names will be substituted by the user
+data_splits:
+  uniform_train: ["UNIFORM_TRAIN_SPLIT_PLACEHOLDER"]
+  uniform_val: ["UNIFORM_VAL_SPLIT_PLACEHOLDER"]
+  
+  curriculum_stage1: ["CURRICULUM_STAGE1_SPLIT"]
+  curriculum_stage2: ["CURRICULUM_STAGE2_SPLIT"]
+  curriculum_stage3: ["CURRICULUM_STAGE3_SPLIT"]
+  
+  curriculum_val: ["CURRICULUM_VAL_SPLIT"]
+
+# Curriculum fine-tuning configuration
+curriculum:
+  # Total steps in uniform FT (for alignment)
+  uniform_total_steps: 10000
+  
+  # Whether to reset optimizer state between stages
+  reset_optimizer_each_stage: false
+  
+  # Stage configurations
+  stages:
+    stage1:
+      splits: ${data_splits.curriculum_stage1}
+      epochs: 5
+      sampling_weights: [1.0]  # Only stage1 data
+    
+    stage2:
+      splits: 
+        - ${data_splits.curriculum_stage1}
+        - ${data_splits.curriculum_stage2}
+      epochs: 5
+      sampling_weights: [0.7, 0.3]  # 70% stage1, 30% stage2
+    
+    stage3:
+      splits:
+        - ${data_splits.curriculum_stage1}
+        - ${data_splits.curriculum_stage2}
+        - ${data_splits.curriculum_stage3}
+      epochs: 5
+      sampling_weights: [0.5, 0.3, 0.2]  # 50% stage1, 30% stage2, 20% stage3
+
+# Pretrained checkpoint
+pretrained_ckpt: checkpoints/pluto_1M_aux_cil.ckpt
+
+# Output directory
+output_dir: ${group}/${experiment}
+metric_dir: metrics
+aggregator_metric_dir: aggregator_metric
+runner_report_file: runner_report.parquet
+
+# Checkpoint path
+checkpoint: null
+
+# Logging
+logger_level: info
+logger_format_string: null
+log_config: false
+
+# Execution
+max_number_of_workers: null
+enable_profiling: false
+gpu: true
+verbose: false
+
+# Distribution
+distribute_by_scenario: true
+distributed_timeout_seconds: 7200
+
+# Cache settings
+cache:
+  cache_path: null
+  force_feature_computation: false
+  use_cache_without_dataset: false
+  cleanup_cache: false
+
+# WandB settings
+wandb:
+  mode: disabled
+  project: nuplan-pluto-lora
+  name: ${experiment}
+  log_model: all
+  artifact: null
+  run_id: null

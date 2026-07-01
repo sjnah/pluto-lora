@@ -58,7 +58,7 @@ class EmergencyBrake:
         min_brake_time = max(ego_speed / abs(self._min_long_accel) + 0.5, 3.0)
 
         if time_to_infraction <= min_brake_time and ego_speed <= self._max_ego_speed:
-            print("Emergency Brake")
+            # Emergency brake applied (suppressed for cleaner logs)
             min_reaction_time = ego_speed / abs(self._emergency_decel) + 0.5
             is_soft_brake_possible = time_to_infraction > min_reaction_time
             trajectory = self._generate_ebrake_trajectory(

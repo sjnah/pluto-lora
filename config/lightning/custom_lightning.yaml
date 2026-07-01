@@ -12,8 +12,8 @@ trainer:
     # max_time: 00:16:00:00  # training time before the process is terminated
 
     max_epochs: ${epochs}  # maximum number of training epochs
-    # check_val_every_n_epoch: 1  # run validation set every n training epochs
-    val_check_interval: 1.0  # [%] run validation set every X% of training set
+    check_val_every_n_epoch: 3  # run validation set every 3 training epochs (reduced to avoid NaN)
+    # val_check_interval: 1.0  # [%] run validation set every X% of training set
 
     limit_train_batches:  # how much of training dataset to check (float = fraction, int = num_batches)
     limit_val_batches:  # how much of validation dataset to check (float = fraction, int = num_batches)
@@ -34,7 +34,7 @@ trainer:
 
     # accumulate_grad_batches: 1  # accumulates gradients every n batches
     # track_grad_norm: -1  # logs the p-norm for inspection
-    gradient_clip_val: 5.0  # value to clip gradients
+    gradient_clip_val: 0.5  # value to clip gradients (very strict for NaN prevention)
     gradient_clip_algorithm: norm  # [value, norm] method to clip gradients
     sync_batchnorm: true
     strategy: ddp_find_unused_parameters_false

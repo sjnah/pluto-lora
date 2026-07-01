@@ -74,10 +74,18 @@ class RouteManager:
                 id_, SemanticMapLayer.ROADBLOCK_CONNECTOR
             )
 
+            # Skip None blocks (invalid route data)
+            if block is None:
+                continue
+
             self._route_roadblock_dict[block.id] = block
 
             for lane in block.interior_edges:
                 self._route_lane_dict[lane.id] = lane
+
+        # Validate that we have at least some route data
+        if len(self._route_roadblock_dict) == 0:
+            raise ValueError("No valid roadblocks found in route - scenario has invalid route data")
 
         self.route_roadblock_ids = updated_route_roadblock_ids
         self.initialized = True

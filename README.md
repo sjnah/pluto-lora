@@ -1,5 +1,24 @@
 # PLUTO
 
+## Local Research Entrypoints
+
+This checkout includes local LoRA fine-tuning and benchmark tooling on top of
+the upstream PLUTO code.
+
+Use these root-level wrappers for the local workflow:
+
+```bash
+bash train.sh           # LLM-percentile LoRA fine-tuning
+bash train.sh rulebased # rule-based difficulty comparison
+bash test.sh            # benchmark current checkpoints
+bash analyze.sh         # summarize benchmark metrics
+```
+
+Detailed scripts live under `scripts/`; generated records and comparison media
+live under `artifacts/`; old one-off scripts are kept in `archive/`.
+
+More local experiment detail: `docs/research/pluto_experiment_guide.md`.
+
 This is the official repository of
 
 **PLUTO: Push the Limit of Imitation Learning-based Planning for Autonomous Driving**,

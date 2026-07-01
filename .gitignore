@@ -162,3 +162,8 @@ wandb/
 outputs/
 *.ckpt
 checkpoints/
+
+
+# Legacy & Videos
+archive/
+artifacts/

@@ -2,6 +2,7 @@ pluto_planner:
   _target_: src.planners.pluto_planner.PlutoPlanner
   _convert_: "all"
 
+  use_gpu: true  # Explicitly enable GPU
   render: false
   eval_dt: 0.1
   eval_num_frames: 40
@@ -28,8 +29,8 @@ pluto_planner:
     state_dropout: 0.75
     use_ego_history: false
     state_attn_encoder: true
-    use_hidden_proj: true
-    cat_x: true
+    use_hidden_proj: true  # Match checkpoint (was trained with true)
+    cat_x: true  # Match checkpoint (was trained with true)
     ref_free_traj: true
 
     feature_builder:

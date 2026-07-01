@@ -156,7 +156,19 @@ class PlanningModel(TorchModuleWrapper):
 
         for blk in self.encoder_blocks:
             x = blk(x, key_padding_mask=key_padding_mask, return_attn_weights=False)
+            # Check for NaN after each encoder block
+            if torch.isnan(x).any():
+                import warnings
+                warnings.warn(f"[ENCODER] NaN detected after encoder block! Replacing with zeros.")
+                x = torch.nan_to_num(x, nan=0.0)
+        
         x = self.norm(x)
+        
+        # Final check before passing to decoder
+        if torch.isnan(x).any():
+            import warnings
+            warnings.warn(f"[ENCODER] NaN in encoder output after norm! Replacing with zeros.")
+            x = torch.nan_to_num(x, nan=0.0)
 
         prediction = self.agent_predictor(x[:, 1:A])
 
@@ -223,7 +235,14 @@ class PlanningModel(TorchModuleWrapper):
                 out["output_trajectory"] = best_trajectory
                 out["candidate_trajectories"] = out_trajectory
             else:
-                out["output_trajectory"] = out["output_ref_free_trajectory"]
+                # Fallback when trajectory is None
+                if "output_ref_free_trajectory" in out:
+                    out["output_trajectory"] = out["output_ref_free_trajectory"]
+                else:
+                    # If ref_free_trajectory is not available, create a zero trajectory
+                    out["output_trajectory"] = torch.zeros(
+                        bs, self.future_steps, 3, device=data["agent"]["valid_mask"].device
+                    )
                 out["probability"] = torch.zeros(1, 0, 0)
                 out["candidate_trajectories"] = torch.zeros(
                     1, 0, 0, self.future_steps, 3

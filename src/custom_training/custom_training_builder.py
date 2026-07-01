@@ -120,8 +120,98 @@ def build_lightning_datamodule(
         else None
     )
 
-    # Build dataset scenarios
-    scenarios = build_scenarios(cfg, worker, model)
+    # Check if this is a curriculum learning stage with multiple splits
+    curriculum_splits = cfg.get("curriculum", {}).get("splits", None)
+    curriculum_weights = cfg.get("curriculum", {}).get("sampling_weights", None)
+    
+    if curriculum_splits is not None and curriculum_weights is not None:
+        # Curriculum learning: load multiple splits and combine with weights
+        logger.info(f"🔄 Curriculum learning mode: Loading {len(curriculum_splits)} splits with weights {curriculum_weights}")
+        
+        all_scenarios_list = []
+        for split_name in curriculum_splits:
+            # Create a temporary config with this split's scenario_filter
+            temp_cfg = OmegaConf.create(cfg)
+            OmegaConf.set_struct(temp_cfg, False)
+            
+            # Load scenario_filter config file directly
+            import yaml
+            # Try to find config directory
+            config_dir = None
+            
+            # First, try to get from hydra runtime config_dir
+            if hasattr(cfg, 'hydra') and hasattr(cfg.hydra, 'runtime') and hasattr(cfg.hydra.runtime, 'config_dir'):
+                config_dir = Path(cfg.hydra.runtime.config_dir)
+                logger.info(f"  Using config_dir from hydra.runtime: {config_dir}")
+            
+            # Second, try to extract from searchpath
+            if config_dir is None or not config_dir.exists():
+                if hasattr(cfg, 'hydra') and hasattr(cfg.hydra, 'searchpath'):
+                    for searchpath in cfg.hydra.searchpath:
+                        if 'file://' in str(searchpath):
+                            candidate_dir = Path(str(searchpath).replace('file://', ''))
+                            if candidate_dir.exists():
+                                config_dir = candidate_dir
+                                logger.info(f"  Using config_dir from searchpath: {config_dir}")
+                                break
+            
+            # Third, try relative path from current working directory
+            if config_dir is None or not config_dir.exists():
+                candidate_dir = Path("./config")
+                if candidate_dir.exists():
+                    config_dir = candidate_dir.resolve()
+                    logger.info(f"  Using relative config_dir: {config_dir}")
+            
+            # Fourth, try absolute path based on script location
+            if config_dir is None or not config_dir.exists():
+                # Try to find pluto/config directory
+                script_dir = Path(__file__).parent.parent.parent  # Go up from src/custom_training to pluto
+                candidate_dir = script_dir / "config"
+                if candidate_dir.exists():
+                    config_dir = candidate_dir
+                    logger.info(f"  Using script-based config_dir: {config_dir}")
+            
+            if config_dir is None or not config_dir.exists():
+                raise FileNotFoundError(
+                    f"Could not find config directory. Tried:\n"
+                    f"  - hydra.runtime.config_dir: {getattr(getattr(getattr(cfg, 'hydra', None), 'runtime', None), 'config_dir', None)}\n"
+                    f"  - searchpath: {getattr(getattr(cfg, 'hydra', None), 'searchpath', None)}\n"
+                    f"  - ./config (relative)\n"
+                    f"  - {Path(__file__).parent.parent.parent / 'config'}"
+                )
+            
+            filter_config_path = config_dir / "scenario_filter" / f"{split_name}.yaml"
+            
+            if not filter_config_path.exists():
+                raise FileNotFoundError(
+                    f"Could not find scenario_filter config for {split_name} at {filter_config_path}. "
+                    f"Config directory: {config_dir} (exists: {config_dir.exists()})"
+                )
+            
+            logger.info(f"  Loading scenario_filter from: {filter_config_path}")
+            
+            # Load the scenario_filter config
+            with open(filter_config_path, 'r') as f:
+                filter_config = yaml.safe_load(f)
+            
+            # Convert to OmegaConf DictConfig
+            temp_cfg.scenario_filter = OmegaConf.create(filter_config)
+            OmegaConf.set_struct(temp_cfg, True)
+            
+            # Load scenarios for this split
+            split_scenarios = build_scenarios(temp_cfg, worker, model)
+            all_scenarios_list.append(split_scenarios)
+            logger.info(f"  ✓ Loaded {len(split_scenarios)} scenarios from split: {split_name}")
+        
+        # Combine all scenarios (will be weighted in datamodule)
+        scenarios = []
+        for split_scenarios in all_scenarios_list:
+            scenarios.extend(split_scenarios)
+        
+        logger.info(f"  ✓ Total scenarios: {len(scenarios)}")
+    else:
+        # Normal mode: single split
+        scenarios = build_scenarios(cfg, worker, model)
 
     # Create datamodule
     datamodule: pl.LightningDataModule = CustomDataModule(
@@ -132,6 +222,9 @@ def build_lightning_datamodule(
         augmentors=augmentors,
         worker=worker,
         scenario_type_sampling_weights=cfg.scenario_type_weights.scenario_type_sampling_weights,
+        curriculum_splits=curriculum_splits,
+        curriculum_weights=curriculum_weights,
+        all_scenarios_list=all_scenarios_list if curriculum_splits is not None else None,
         **cfg.data_loader.datamodule,
     )
 
@@ -185,6 +278,9 @@ def build_custom_trainer(cfg: DictConfig) -> pl.Trainer:
     params = cfg.lightning.trainer.params
 
     # callbacks = build_callbacks(cfg)
+    # Import NaN protection callback
+    from src.models.pluto.nan_protection import NaNProtectionCallback
+    
     callbacks = [
         ModelCheckpoint(
             dirpath=os.path.join(os.getcwd(), "checkpoints"),
@@ -197,9 +293,10 @@ def build_custom_trainer(cfg: DictConfig) -> pl.Trainer:
         RichModelSummary(max_depth=1),
         RichProgressBar(),
         LearningRateMonitor(logging_interval="epoch"),
+        NaNProtectionCallback(check_frequency=1),  # Check every step for NaN
     ]
 
-    if cfg.wandb.mode == "disable":
+    if cfg.wandb.mode in ["disable", "disabled", "offline"]:
         training_logger = TensorBoardLogger(
             save_dir=cfg.group,
             name=cfg.experiment,

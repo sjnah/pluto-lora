@@ -8,6 +8,7 @@ hydra:
     - pkg://nuplan.planning.script.experiments                  # Put experiments configs in script/experiments/<exp_dir>
     - config/simulation
     - config/scenario_filter
+    - config/scenario_builder
 
 defaults:
   # Add ungrouped items
