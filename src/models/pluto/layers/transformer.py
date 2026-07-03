@@ -7,6 +7,13 @@ from timm.models.layers import DropPath
 from torch import Tensor
 
 
+def as_bool_mask(mask: Optional[Tensor]) -> Optional[Tensor]:
+    """Normalize padding masks for PyTorch MultiheadAttention."""
+    if mask is None or mask.dtype == torch.bool:
+        return mask
+    return mask.bool()
+
+
 class Mlp(nn.Module):
     """MLP as used in Vision Transformer, MLP-Mixer and related networks"""
 
@@ -78,6 +85,7 @@ class TransformerEncoderLayer(nn.Module):
         return_attn_weights=False,
     ):
         src2 = self.norm1(src)
+        key_padding_mask = as_bool_mask(key_padding_mask)
         src2, attn = self.attn(
             query=src2,
             key=src2,
@@ -151,6 +159,7 @@ class CrossAttentionLayer(nn.Module):
         attn_mask: Optional[Tensor],
         key_padding_mask: Optional[Tensor],
     ) -> Tensor:
+        key_padding_mask = as_bool_mask(key_padding_mask)
         x = self.attn(
             x,
             mem,
@@ -210,7 +219,11 @@ class TransformerDecoderLayer(nn.Module):
     ):
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(
-            q, k, value=tgt, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
+            q,
+            k,
+            value=tgt,
+            attn_mask=tgt_mask,
+            key_padding_mask=as_bool_mask(tgt_key_padding_mask),
         )[0]
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
@@ -219,7 +232,7 @@ class TransformerDecoderLayer(nn.Module):
             key=self.with_pos_embed(memory, pos),
             value=memory,
             attn_mask=memory_mask,
-            key_padding_mask=memory_key_padding_mask,
+            key_padding_mask=as_bool_mask(memory_key_padding_mask),
         )[0]
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
@@ -242,7 +255,11 @@ class TransformerDecoderLayer(nn.Module):
         tgt2 = self.norm1(tgt)
         q = k = self.with_pos_embed(tgt2, query_pos)
         tgt2 = self.self_attn(
-            q, k, value=tgt2, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
+            q,
+            k,
+            value=tgt2,
+            attn_mask=tgt_mask,
+            key_padding_mask=as_bool_mask(tgt_key_padding_mask),
         )[0]
         tgt = tgt + self.dropout1(tgt2)
         tgt2 = self.norm2(tgt)
@@ -251,7 +268,7 @@ class TransformerDecoderLayer(nn.Module):
             key=self.with_pos_embed(memory, pos),
             value=memory,
             attn_mask=memory_mask,
-            key_padding_mask=memory_key_padding_mask,
+            key_padding_mask=as_bool_mask(memory_key_padding_mask),
         )[0]
         tgt = tgt + self.dropout2(tgt2)
         tgt2 = self.norm3(tgt)

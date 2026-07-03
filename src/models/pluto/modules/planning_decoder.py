@@ -7,6 +7,7 @@ from torch import Tensor
 from ..layers.embedding import PointsEncoder
 from ..layers.fourier_embedding import FourierEmbedding
 from ..layers.mlp_layer import MLPLayer
+from ..layers.transformer import as_bool_mask
 
 
 class DecoderLayer(nn.Module):
@@ -52,6 +53,8 @@ class DecoderLayer(nn.Module):
         tgt_key_padding_mask: (bs, R)
         """
         bs, R, M, D = tgt.shape
+        tgt_key_padding_mask = as_bool_mask(tgt_key_padding_mask)
+        memory_key_padding_mask = as_bool_mask(memory_key_padding_mask)
 
         tgt = tgt.transpose(1, 2).reshape(bs * M, R, D)
         tgt2 = self.norm1(tgt)
