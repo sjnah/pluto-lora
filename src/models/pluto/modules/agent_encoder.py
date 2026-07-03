@@ -129,6 +129,8 @@ class StateAttentionEncoder(nn.Module):
             key_padding_mask = None
 
         query = self.query.repeat(x_embed.shape[0], 1, 1)
+        if key_padding_mask is not None and key_padding_mask.dtype != torch.bool:
+            key_padding_mask = key_padding_mask.bool()
 
         x_state = self.attn(
             query=query,

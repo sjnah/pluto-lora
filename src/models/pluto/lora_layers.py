@@ -14,6 +14,12 @@ import torch
 import torch.nn as nn
 
 
+def _as_bool_mask(mask):
+    if mask is None or mask.dtype == torch.bool:
+        return mask
+    return mask.bool()
+
+
 class LoRALinear(nn.Module):
     """
     LoRA (Low-Rank Adaptation) Linear Layer.
@@ -211,6 +217,7 @@ def _patch_multihead_attention_forward(attn: nn.MultiheadAttention):
         is_causal=False,
     ):
         has_lora_in_proj = hasattr(self, 'in_proj_lora') and self.in_proj_lora is not None
+        key_padding_mask = _as_bool_mask(key_padding_mask)
         
         if has_lora_in_proj:
             # Self-attention: use LoRA-augmented in_proj for Q, K, V
@@ -601,4 +608,3 @@ def merge_lora_weights(model: nn.Module, verbose: bool = True) -> nn.Module:
         print("✓ All LoRA weights merged successfully!")
     
     return merged_model
-
