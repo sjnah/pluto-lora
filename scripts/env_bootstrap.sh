@@ -18,6 +18,26 @@ else
 fi
 INTERPLAN_ROOT="${INTERPLAN_ROOT:-${WORKSPACE_ROOT}/interPlan}"
 
+choose_exp_root() {
+    local candidate="${NUPLAN_EXP_ROOT:-${NUPLAN_RUNTIME_ROOT}/exp}"
+    local fallback="${NUPLAN_FALLBACK_EXP_ROOT:-${WORKSPACE_ROOT}/nuplan-exp}"
+    local probe=".write_test_$$"
+
+    if [ "${NUPLAN_PRESERVE_EXPLICIT_PATHS:-0}" = "1" ] && [ -n "${NUPLAN_EXP_ROOT:-}" ]; then
+        echo "$NUPLAN_EXP_ROOT"
+        return
+    fi
+
+    if mkdir -p "$candidate" 2>/dev/null && ( : > "${candidate}/${probe}" ) 2>/dev/null; then
+        rm -f "${candidate}/${probe}"
+        echo "$candidate"
+        return
+    fi
+
+    mkdir -p "$fallback"
+    echo "$fallback"
+}
+
 if [ "${USE_CONDA:-1}" != "0" ] && command -v conda >/dev/null 2>&1; then
     if [ -z "${CONDA_DEFAULT_ENV:-}" ] || [ "$CONDA_DEFAULT_ENV" != "${CONDA_ENV_NAME:-nuplan}" ]; then
         echo "Activating conda environment: ${CONDA_ENV_NAME:-nuplan}"
@@ -46,7 +66,7 @@ if [ "${NUPLAN_PRESERVE_EXPLICIT_PATHS:-0}" = "1" ]; then
 else
     export NUPLAN_DATA_ROOT="${NUPLAN_RUNTIME_ROOT}/database"
     export NUPLAN_MAPS_ROOT="${NUPLAN_DATA_ROOT}/maps"
-    export NUPLAN_EXP_ROOT="${NUPLAN_RUNTIME_ROOT}/exp"
+    export NUPLAN_EXP_ROOT="$(choose_exp_root)"
 fi
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
 
@@ -56,4 +76,14 @@ if [ "${NUPLAN_VALIDATE_PATHS:-1}" = "1" ] && [ ! -e "$NUPLAN_DATA_ROOT" ]; then
     echo "Resolved NUPLAN_RUNTIME_ROOT=$NUPLAN_RUNTIME_ROOT" >&2
     echo "Set NUPLAN_RUNTIME_ROOT=/root/vessl-nuplan or source the current .env.server." >&2
     exit 1
+fi
+
+if [ "${NUPLAN_VALIDATE_PATHS:-1}" = "1" ]; then
+    probe=".write_test_$$"
+    if ! mkdir -p "$NUPLAN_EXP_ROOT/exp" 2>/dev/null || ! ( : > "${NUPLAN_EXP_ROOT}/exp/${probe}" ) 2>/dev/null; then
+        echo "Error: NUPLAN_EXP_ROOT is not writable: $NUPLAN_EXP_ROOT" >&2
+        echo "Set NUPLAN_EXP_ROOT to a writable path, for example ${WORKSPACE_ROOT}/nuplan-exp." >&2
+        exit 1
+    fi
+    rm -f "${NUPLAN_EXP_ROOT}/exp/${probe}"
 fi

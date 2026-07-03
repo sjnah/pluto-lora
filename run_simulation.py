@@ -11,6 +11,27 @@ REPO_ROOT = Path(__file__).resolve().parent
 WORKSPACE_ROOT = REPO_ROOT.parent
 
 
+def resolve_exp_root(runtime_root: Path) -> Path:
+    explicit = os.environ.get("NUPLAN_EXP_ROOT")
+    candidate = Path(explicit) if explicit else runtime_root / "exp"
+
+    if os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1" and explicit:
+        return candidate
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / f".write_test_{os.getpid()}"
+        probe.write_text("")
+        probe.unlink(missing_ok=True)
+        return candidate
+    except OSError:
+        pass
+
+    fallback = Path(os.environ.get("NUPLAN_FALLBACK_EXP_ROOT", WORKSPACE_ROOT / "nuplan-exp"))
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
 def bootstrap_workspace_paths() -> None:
     """Expose sibling workspace checkouts before importing nuPlan modules."""
     nuplan_devkit_root = Path(os.environ.get("NUPLAN_DEVKIT_ROOT", WORKSPACE_ROOT / "nuplan-devkit"))
@@ -20,6 +41,7 @@ def bootstrap_workspace_paths() -> None:
         nuplan_runtime_root = Path("/root/vessl-nuplan")
     else:
         nuplan_runtime_root = nuplan_devkit_root / "nuplan"
+    nuplan_exp_root = resolve_exp_root(nuplan_runtime_root)
     candidate_roots = [
         REPO_ROOT,
         nuplan_devkit_root,
@@ -44,7 +66,7 @@ def bootstrap_workspace_paths() -> None:
     else:
         os.environ["NUPLAN_DATA_ROOT"] = str(nuplan_runtime_root / "database")
         os.environ["NUPLAN_MAPS_ROOT"] = str(Path(os.environ["NUPLAN_DATA_ROOT"]) / "maps")
-        os.environ["NUPLAN_EXP_ROOT"] = str(nuplan_runtime_root / "exp")
+        os.environ["NUPLAN_EXP_ROOT"] = str(nuplan_exp_root)
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
     if not Path(os.environ["NUPLAN_DATA_ROOT"]).exists():

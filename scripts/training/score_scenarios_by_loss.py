@@ -28,8 +28,30 @@ else:
     NUPLAN_RUNTIME_ROOT = NUPLAN_DEVKIT_ROOT / "nuplan"
 
 
+def resolve_exp_root(runtime_root: Path) -> Path:
+    explicit = os.environ.get("NUPLAN_EXP_ROOT")
+    candidate = Path(explicit) if explicit else runtime_root / "exp"
+
+    if os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1" and explicit:
+        return candidate
+
+    try:
+        candidate.mkdir(parents=True, exist_ok=True)
+        probe = candidate / f".write_test_{os.getpid()}"
+        probe.write_text("")
+        probe.unlink(missing_ok=True)
+        return candidate
+    except OSError:
+        pass
+
+    fallback = Path(os.environ.get("NUPLAN_FALLBACK_EXP_ROOT", WORKSPACE_ROOT / "nuplan-exp"))
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
 def configure_workspace_environment() -> None:
     """Pin nuPlan paths to this workspace before Hydra composes env-based configs."""
+    nuplan_exp_root = resolve_exp_root(NUPLAN_RUNTIME_ROOT)
     os.environ.setdefault("NUPLAN_DEVKIT_ROOT", str(NUPLAN_DEVKIT_ROOT))
     os.environ.setdefault("NUPLAN_RUNTIME_ROOT", str(NUPLAN_RUNTIME_ROOT))
     if os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1":
@@ -39,7 +61,7 @@ def configure_workspace_environment() -> None:
     else:
         os.environ["NUPLAN_DATA_ROOT"] = str(NUPLAN_RUNTIME_ROOT / "database")
         os.environ["NUPLAN_MAPS_ROOT"] = str(Path(os.environ["NUPLAN_DATA_ROOT"]) / "maps")
-        os.environ["NUPLAN_EXP_ROOT"] = str(NUPLAN_RUNTIME_ROOT / "exp")
+        os.environ["NUPLAN_EXP_ROOT"] = str(nuplan_exp_root)
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
     if not Path(os.environ["NUPLAN_DATA_ROOT"]).exists():
