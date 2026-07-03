@@ -519,9 +519,13 @@ def load_scenario_record_metadata(records_dir):
     return records
 
 def main():
+    default_exp_root = Path(os.environ.get(
+        "NUPLAN_EXP_ROOT",
+        str((REPO_ROOT / "../nuplan-devkit/nuplan/exp").resolve()),
+    )) / "exp"
     base_dir = os.environ.get(
         "NUPLAN_EXP_DIR",
-        str((REPO_ROOT / "../nuplan-devkit/nuplan/exp/exp").resolve()),
+        str(default_exp_root),
     )
     records_dir = os.environ.get(
         "PLUTO_SCENARIO_RECORDS_DIR",

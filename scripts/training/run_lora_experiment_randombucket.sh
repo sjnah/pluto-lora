@@ -9,7 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
-NUPLAN_DEVKIT_ROOT="${WORKSPACE_ROOT}/nuplan-devkit"
+NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 RANDOMBUCKET_FILTER_DIR="${WORKSPACE_ROOT}/llm-taxonomy/artifacts/scenario_filters/pluto_randombucket"
 PLUTO_FILTER_DIR="${REPO_ROOT}/config/scenario_filter"
 cd "$REPO_ROOT"

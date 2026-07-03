@@ -19,16 +19,37 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = REPO_ROOT.parent
-NUPLAN_DEVKIT_ROOT = WORKSPACE_ROOT / "nuplan-devkit"
+NUPLAN_DEVKIT_ROOT = Path(os.environ.get("NUPLAN_DEVKIT_ROOT", WORKSPACE_ROOT / "nuplan-devkit"))
+if "NUPLAN_RUNTIME_ROOT" in os.environ:
+    NUPLAN_RUNTIME_ROOT = Path(os.environ["NUPLAN_RUNTIME_ROOT"])
+elif Path("/root/vessl-nuplan").exists():
+    NUPLAN_RUNTIME_ROOT = Path("/root/vessl-nuplan")
+else:
+    NUPLAN_RUNTIME_ROOT = NUPLAN_DEVKIT_ROOT / "nuplan"
 
 
 def configure_workspace_environment() -> None:
     """Pin nuPlan paths to this workspace before Hydra composes env-based configs."""
-    local_database_root = NUPLAN_DEVKIT_ROOT / "nuplan" / "database"
-    os.environ["NUPLAN_DATA_ROOT"] = str(local_database_root)
-    os.environ["NUPLAN_MAPS_ROOT"] = str(local_database_root / "maps")
-    os.environ["NUPLAN_EXP_ROOT"] = str(NUPLAN_DEVKIT_ROOT / "nuplan" / "exp")
+    os.environ.setdefault("NUPLAN_DEVKIT_ROOT", str(NUPLAN_DEVKIT_ROOT))
+    os.environ.setdefault("NUPLAN_RUNTIME_ROOT", str(NUPLAN_RUNTIME_ROOT))
+    if os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1":
+        os.environ.setdefault("NUPLAN_DATA_ROOT", str(NUPLAN_RUNTIME_ROOT / "database"))
+        os.environ.setdefault("NUPLAN_MAPS_ROOT", str(Path(os.environ["NUPLAN_DATA_ROOT"]) / "maps"))
+        os.environ.setdefault("NUPLAN_EXP_ROOT", str(NUPLAN_RUNTIME_ROOT / "exp"))
+    else:
+        os.environ["NUPLAN_DATA_ROOT"] = str(NUPLAN_RUNTIME_ROOT / "database")
+        os.environ["NUPLAN_MAPS_ROOT"] = str(Path(os.environ["NUPLAN_DATA_ROOT"]) / "maps")
+        os.environ["NUPLAN_EXP_ROOT"] = str(NUPLAN_RUNTIME_ROOT / "exp")
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+    if not Path(os.environ["NUPLAN_DATA_ROOT"]).exists():
+        raise FileNotFoundError(
+            "NUPLAN_DATA_ROOT does not exist: "
+            f"{os.environ['NUPLAN_DATA_ROOT']}. "
+            f"Resolved NUPLAN_DEVKIT_ROOT={os.environ['NUPLAN_DEVKIT_ROOT']}, "
+            f"NUPLAN_RUNTIME_ROOT={os.environ['NUPLAN_RUNTIME_ROOT']}. "
+            "Set NUPLAN_RUNTIME_ROOT=/root/vessl-nuplan or source the current .env.server."
+        )
 
 
 configure_workspace_environment()

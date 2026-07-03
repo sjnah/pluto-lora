@@ -17,7 +17,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
-NUPLAN_DEVKIT_ROOT="${WORKSPACE_ROOT}/nuplan-devkit"
+NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
 
@@ -148,7 +148,7 @@ run_model_interplan_simulation() {
     echo "Running ${label} on interPlan (${INTERPLAN_FILTER})..."
     run_interplan_simulation "$INTERPLAN_FILTER" "$ckpt" "$experiment"
 
-    local metrics_dir="../nuplan-devkit/nuplan/exp/exp/${experiment}"
+    local metrics_dir="${NUPLAN_EXP_ROOT}/exp/${experiment}"
     local record_file="${SCENARIO_RECORDS_DIR}/${experiment}.json"
     if [ -f "${REPO_ROOT}/scripts/evaluation/save_scenario_tokens.py" ]; then
         python ${REPO_ROOT}/scripts/evaluation/save_scenario_tokens.py "$metrics_dir" "$record_file" || echo "Could not save scenario tokens"
@@ -261,7 +261,7 @@ echo "✅ Quick test (interPlan $INTERPLAN_FILTER) complete!"
 echo "=============================================="
 echo "Time taken: ${MINUTES}m ${SECONDS}s"
 echo ""
-echo "Results are in: ../nuplan-devkit/nuplan/exp/exp/quick_test_interplan_*_${EXP_SUFFIX}"
+echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_interplan_*_${EXP_SUFFIX}"
 echo ""
 echo "Analyzing results..."
 python ${REPO_ROOT}/scripts/analysis/analyze_quick_test.py

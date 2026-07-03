@@ -28,7 +28,10 @@ from typing import Any, Iterable
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 WORKSPACE_ROOT = REPO_ROOT.parent
-DEFAULT_EXP_ROOT = WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "exp" / "exp"
+DEFAULT_NUPLAN_EXP_ROOT = Path(
+    os.environ.get("NUPLAN_EXP_ROOT", str(WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "exp"))
+)
+DEFAULT_EXP_ROOT = DEFAULT_NUPLAN_EXP_ROOT / "exp"
 DEFAULT_RECORDS_DIR = REPO_ROOT / "artifacts" / "records" / "scenario_records"
 DEFAULT_MANIFEST_DIR = REPO_ROOT / "artifacts" / "records" / "batched_runs"
 

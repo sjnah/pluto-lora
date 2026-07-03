@@ -11,6 +11,11 @@ if [ -z "${WORKSPACE_ROOT:-}" ]; then
 fi
 
 NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
+if [ -z "${NUPLAN_RUNTIME_ROOT:-}" ] && [ -d "/root/vessl-nuplan" ]; then
+    NUPLAN_RUNTIME_ROOT="/root/vessl-nuplan"
+else
+    NUPLAN_RUNTIME_ROOT="${NUPLAN_RUNTIME_ROOT:-${NUPLAN_DEVKIT_ROOT}/nuplan}"
+fi
 INTERPLAN_ROOT="${INTERPLAN_ROOT:-${WORKSPACE_ROOT}/interPlan}"
 
 if [ "${USE_CONDA:-1}" != "0" ] && command -v conda >/dev/null 2>&1; then
@@ -32,7 +37,23 @@ if [ ! -d "$NUPLAN_DEVKIT_ROOT/nuplan" ]; then
 fi
 
 export PYTHONPATH="${REPO_ROOT}:${NUPLAN_DEVKIT_ROOT}:${INTERPLAN_ROOT}:${PYTHONPATH:-}"
-export NUPLAN_DATA_ROOT="${NUPLAN_DATA_ROOT:-${NUPLAN_DEVKIT_ROOT}/nuplan/database}"
-export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${NUPLAN_DATA_ROOT}/maps}"
-export NUPLAN_EXP_ROOT="${NUPLAN_EXP_ROOT:-${NUPLAN_DEVKIT_ROOT}/nuplan/exp}"
+export NUPLAN_DEVKIT_ROOT
+export NUPLAN_RUNTIME_ROOT
+if [ "${NUPLAN_PRESERVE_EXPLICIT_PATHS:-0}" = "1" ]; then
+    export NUPLAN_DATA_ROOT="${NUPLAN_DATA_ROOT:-${NUPLAN_RUNTIME_ROOT}/database}"
+    export NUPLAN_MAPS_ROOT="${NUPLAN_MAPS_ROOT:-${NUPLAN_DATA_ROOT}/maps}"
+    export NUPLAN_EXP_ROOT="${NUPLAN_EXP_ROOT:-${NUPLAN_RUNTIME_ROOT}/exp}"
+else
+    export NUPLAN_DATA_ROOT="${NUPLAN_RUNTIME_ROOT}/database"
+    export NUPLAN_MAPS_ROOT="${NUPLAN_DATA_ROOT}/maps"
+    export NUPLAN_EXP_ROOT="${NUPLAN_RUNTIME_ROOT}/exp"
+fi
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
+
+if [ "${NUPLAN_VALIDATE_PATHS:-1}" = "1" ] && [ ! -e "$NUPLAN_DATA_ROOT" ]; then
+    echo "Error: NUPLAN_DATA_ROOT does not exist: $NUPLAN_DATA_ROOT" >&2
+    echo "Resolved NUPLAN_DEVKIT_ROOT=$NUPLAN_DEVKIT_ROOT" >&2
+    echo "Resolved NUPLAN_RUNTIME_ROOT=$NUPLAN_RUNTIME_ROOT" >&2
+    echo "Set NUPLAN_RUNTIME_ROOT=/root/vessl-nuplan or source the current .env.server." >&2
+    exit 1
+fi

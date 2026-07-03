@@ -19,7 +19,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
-NUPLAN_DEVKIT_ROOT="${WORKSPACE_ROOT}/nuplan-devkit"
+NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
 
@@ -175,7 +175,7 @@ run_model_simulation() {
     echo "Running ${label} on ${filter}..."
     run_simulation "$filter" "$ckpt" "$experiment" "$scenario_builder"
 
-    local metrics_dir="../nuplan-devkit/nuplan/exp/exp/${experiment}/metrics"
+    local metrics_dir="${NUPLAN_EXP_ROOT}/exp/${experiment}/metrics"
     local record_file="${SCENARIO_RECORDS_DIR}/${experiment}.json"
     python ${REPO_ROOT}/scripts/evaluation/save_scenario_tokens.py "$metrics_dir" "$record_file" || echo "Could not save scenario tokens"
 
@@ -272,7 +272,7 @@ echo "✅ Quick test (test14-hard) complete!"
 echo "=============================================="
 echo "Time taken: ${MINUTES}m ${SECONDS}s"
 echo ""
-echo "Results are in: ../nuplan-devkit/nuplan/exp/exp/quick_test_*_test14_hard"
+echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_*_test14_hard"
 echo ""
 echo "Analyzing results..."
 python ${REPO_ROOT}/scripts/analysis/analyze_quick_test.py

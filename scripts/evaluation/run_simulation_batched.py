@@ -16,11 +16,18 @@ from typing import Any, Dict, List, Optional, Set
 SCRIPT_DIR = Path(__file__).parent.absolute()
 REPO_ROOT = SCRIPT_DIR.parent.parent
 WORKSPACE_ROOT = REPO_ROOT.parent
-EXP_ROOT = WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "exp" / "exp"
+NUPLAN_DEVKIT_ROOT = Path(os.environ.get("NUPLAN_DEVKIT_ROOT", WORKSPACE_ROOT / "nuplan-devkit"))
+if "NUPLAN_RUNTIME_ROOT" in os.environ:
+    NUPLAN_RUNTIME_ROOT = Path(os.environ["NUPLAN_RUNTIME_ROOT"])
+elif Path("/root/vessl-nuplan").exists():
+    NUPLAN_RUNTIME_ROOT = Path("/root/vessl-nuplan")
+else:
+    NUPLAN_RUNTIME_ROOT = NUPLAN_DEVKIT_ROOT / "nuplan"
+EXP_ROOT = Path(os.environ.get("NUPLAN_EXP_ROOT", NUPLAN_RUNTIME_ROOT / "exp")) / "exp"
 MANIFEST_DIR = REPO_ROOT / "artifacts" / "records" / "batched_runs"
 EXTRA_PYTHONPATHS = [
     REPO_ROOT,
-    WORKSPACE_ROOT / "nuplan-devkit",
+    NUPLAN_DEVKIT_ROOT,
     WORKSPACE_ROOT / "interPlan",
 ]
 
@@ -37,13 +44,27 @@ def configure_pythonpath() -> None:
     merged_paths = prepend_paths + [path for path in existing_paths if path]
     os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(merged_paths))
 
-    local_database_root = WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "database"
-    if local_database_root.exists():
-        os.environ["NUPLAN_DATA_ROOT"] = str(local_database_root)
-        os.environ["NUPLAN_MAPS_ROOT"] = str(local_database_root / "maps")
-        os.environ["NUPLAN_EXP_ROOT"] = str(WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "exp")
+    os.environ.setdefault("NUPLAN_DEVKIT_ROOT", str(NUPLAN_DEVKIT_ROOT))
+    os.environ.setdefault("NUPLAN_RUNTIME_ROOT", str(NUPLAN_RUNTIME_ROOT))
+    if os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1":
+        os.environ.setdefault("NUPLAN_DATA_ROOT", str(NUPLAN_RUNTIME_ROOT / "database"))
+        os.environ.setdefault("NUPLAN_MAPS_ROOT", str(Path(os.environ["NUPLAN_DATA_ROOT"]) / "maps"))
+        os.environ.setdefault("NUPLAN_EXP_ROOT", str(NUPLAN_RUNTIME_ROOT / "exp"))
+    else:
+        os.environ["NUPLAN_DATA_ROOT"] = str(NUPLAN_RUNTIME_ROOT / "database")
+        os.environ["NUPLAN_MAPS_ROOT"] = str(Path(os.environ["NUPLAN_DATA_ROOT"]) / "maps")
+        os.environ["NUPLAN_EXP_ROOT"] = str(NUPLAN_RUNTIME_ROOT / "exp")
 
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+    if not Path(os.environ["NUPLAN_DATA_ROOT"]).exists():
+        raise FileNotFoundError(
+            "NUPLAN_DATA_ROOT does not exist: "
+            f"{os.environ['NUPLAN_DATA_ROOT']}. "
+            f"Resolved NUPLAN_DEVKIT_ROOT={os.environ['NUPLAN_DEVKIT_ROOT']}, "
+            f"NUPLAN_RUNTIME_ROOT={os.environ['NUPLAN_RUNTIME_ROOT']}. "
+            "Set NUPLAN_RUNTIME_ROOT=/root/vessl-nuplan or source the current .env.server."
+        )
 
 
 configure_pythonpath()
