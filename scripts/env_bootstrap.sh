@@ -22,6 +22,7 @@ choose_exp_root() {
     local candidate="${NUPLAN_EXP_ROOT:-${NUPLAN_RUNTIME_ROOT}/exp}"
     local fallback="${NUPLAN_FALLBACK_EXP_ROOT:-${WORKSPACE_ROOT}/nuplan-exp}"
     local probe=".write_test_$$"
+    local explicit_exp_root="${NUPLAN_EXP_ROOT:-}"
 
     if [ "${NUPLAN_PRESERVE_EXPLICIT_PATHS:-0}" = "1" ] && [ -n "${NUPLAN_EXP_ROOT:-}" ]; then
         echo "$NUPLAN_EXP_ROOT"
@@ -34,6 +35,13 @@ choose_exp_root() {
         return
     fi
 
+    if [ -n "$explicit_exp_root" ]; then
+        echo "Error: explicit NUPLAN_EXP_ROOT is not writable: $explicit_exp_root" >&2
+        echo "Fix the mount permissions or choose a writable shared exp root." >&2
+        exit 1
+    fi
+
+    echo "Warning: ${candidate} is not writable; falling back to ${fallback}" >&2
     mkdir -p "$fallback"
     echo "$fallback"
 }

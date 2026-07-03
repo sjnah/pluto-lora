@@ -39,10 +39,15 @@ def resolve_exp_root(runtime_root: Path) -> Path:
         probe.write_text("")
         probe.unlink(missing_ok=True)
         return candidate
-    except OSError:
-        pass
+    except OSError as error:
+        if explicit:
+            raise RuntimeError(
+                f"Explicit NUPLAN_EXP_ROOT is not writable: {candidate}. "
+                "Fix the mount permissions or choose a writable shared exp root."
+            ) from error
 
     fallback = Path(os.environ.get("NUPLAN_FALLBACK_EXP_ROOT", WORKSPACE_ROOT / "nuplan-exp"))
+    print(f"Warning: {candidate} is not writable; falling back to {fallback}", file=sys.stderr)
     fallback.mkdir(parents=True, exist_ok=True)
     return fallback
 
