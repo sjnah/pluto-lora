@@ -9,6 +9,7 @@ import os
 import json
 import argparse
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -111,17 +112,33 @@ def extract_scenario_tokens(filter_name: str, scenario_builder: Optional[str] = 
     
     # Set up config directory
     config_dir = REPO_ROOT / "config"
+    nuplan_simulation_config = NUPLAN_DEVKIT_ROOT / "nuplan" / "planning" / "script" / "config" / "simulation"
     
     print(f"🔍 Extracting scenario tokens from filter: {filter_name}")
     
     # Initialize hydra (without version_base for older Hydra versions)
     with initialize_config_dir(config_dir=str(config_dir)):
         # Compose config with proper Hydra override format
-        overrides = [f"scenario_filter={filter_name}"]
+        overrides = [
+            "hydra.searchpath="
+            "[pkg://nuplan.planning.script.config.common,"
+            "pkg://nuplan.planning.script.config.simulation,"
+            "pkg://nuplan.planning.script.experiments,"
+            f"file://{nuplan_simulation_config},"
+            f"file://{config_dir / 'scenario_filter'},"
+            f"file://{config_dir / 'scenario_builder'}]",
+            f"scenario_filter={filter_name}",
+        ]
         if scenario_builder:
             overrides.append(f"scenario_builder={scenario_builder}")
         
-        cfg = compose(config_name="default_simulation", overrides=overrides)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"provider=hydra\.searchpath in main, path=config/simulation is not available\.",
+                category=UserWarning,
+            )
+            cfg = compose(config_name="default_simulation", overrides=overrides)
         
         # Override limit if specified
         if limit is not None:
