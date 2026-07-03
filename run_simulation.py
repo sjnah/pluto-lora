@@ -1,9 +1,42 @@
 import logging
 import os
 import pprint
+import sys
 from pathlib import Path
 from shutil import rmtree
 from typing import List, Optional, Union
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+WORKSPACE_ROOT = REPO_ROOT.parent
+
+
+def bootstrap_workspace_paths() -> None:
+    """Expose sibling workspace checkouts before importing nuPlan modules."""
+    candidate_roots = [
+        REPO_ROOT,
+        WORKSPACE_ROOT / "nuplan-devkit",
+        WORKSPACE_ROOT / "interPlan",
+    ]
+    existing_pythonpath = os.environ.get("PYTHONPATH", "").split(os.pathsep)
+    prepend_paths = [str(path) for path in candidate_roots if path.exists()]
+
+    for path in reversed(prepend_paths):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    merged_paths = prepend_paths + [path for path in existing_pythonpath if path]
+    os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(merged_paths))
+
+    local_database_root = WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "database"
+    if local_database_root.exists():
+        os.environ.setdefault("NUPLAN_DATA_ROOT", str(local_database_root))
+        os.environ.setdefault("NUPLAN_MAPS_ROOT", str(local_database_root / "maps"))
+        os.environ.setdefault("NUPLAN_EXP_ROOT", str(WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "exp"))
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+
+bootstrap_workspace_paths()
 
 import hydra
 import pandas as pd

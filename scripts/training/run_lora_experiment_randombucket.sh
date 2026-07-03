@@ -1,9 +1,8 @@
 #!/bin/bash
-# PLUTO LoRA fine-tuning experiment using LLM-guided curriculum filters.
+# PLUTO LoRA fine-tuning experiment using random-bucket curriculum filters.
 #
-# This script intentionally runs only the LLM-based curriculum path. The
-# uniform-principle curriculum baseline is split into:
-#   scripts/training/run_lora_experiment_uniform.sh
+# RandomBucket-FT keeps the curriculum phase structure, but the bucket
+# assignment is seeded random rather than LLM/rule/loss difficulty.
 
 set -e
 
@@ -11,6 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 NUPLAN_DEVKIT_ROOT="${WORKSPACE_ROOT}/nuplan-devkit"
+RANDOMBUCKET_FILTER_DIR="${WORKSPACE_ROOT}/llm-taxonomy/artifacts/scenario_filters/pluto_randombucket"
+PLUTO_FILTER_DIR="${REPO_ROOT}/config/scenario_filter"
 cd "$REPO_ROOT"
 
 # ============================================================================
@@ -43,11 +44,44 @@ ULTRA_MINIMAL=true
 BATCH_SIZE=4
 ACCUMULATE_GRAD_BATCHES=8
 
-SCENARIO_FILTER_STAGE1="llm_guided_train_easy"
-SCENARIO_FILTER_STAGE2="llm_guided_train_medium"
-SCENARIO_FILTER_STAGE3="llm_guided_train_hard"
+SCENARIO_FILTER_STAGE1="randombucket_train_easy"
+SCENARIO_FILTER_STAGE2="randombucket_train_medium"
+SCENARIO_FILTER_STAGE3="randombucket_train_hard"
 
-CURRICULUM_BASE_EXP="curriculum_lora_llmbased"
+CURRICULUM_BASE_EXP="curriculum_lora_randombucket"
+
+ensure_randombucket_filters() {
+    local missing=0
+    mkdir -p "$PLUTO_FILTER_DIR"
+
+    for filter_name in "$SCENARIO_FILTER_STAGE1" "$SCENARIO_FILTER_STAGE2" "$SCENARIO_FILTER_STAGE3"; do
+        local target="${PLUTO_FILTER_DIR}/${filter_name}.yaml"
+        local source="${RANDOMBUCKET_FILTER_DIR}/${filter_name}.yaml"
+
+        if [ ! -f "$target" ] && [ -f "$source" ]; then
+            cp "$source" "$target"
+            echo "Copied ${filter_name}.yaml into PLUTO config"
+        fi
+
+        if [ ! -f "$target" ]; then
+            echo "Missing PLUTO scenario filter: $target"
+            missing=1
+        fi
+    done
+
+    if [ "$missing" -ne 0 ]; then
+        echo ""
+        echo "Generate RandomBucket filters first, for example:"
+        echo "  cd ${WORKSPACE_ROOT}/llm-taxonomy"
+        echo "  python scripts/experiments/pluto/create_randombucket_filters.py \\"
+        echo "    --input-filter ${WORKSPACE_ROOT}/pluto/config/scenario_filter/uniform_train_all.yaml \\"
+        echo "    --output-dir artifacts/scenario_filters/pluto_randombucket \\"
+        echo "    --bucket-fracs 0.30 0.30 0.40 \\"
+        echo "    --seed 42 \\"
+        echo "    --copy-to-pluto-config"
+        exit 1
+    fi
+}
 
 find_latest_checkpoint() {
     local exp_name="$1"
@@ -132,8 +166,10 @@ run_lora_train() {
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 
+ensure_randombucket_filters
+
 echo "=============================================="
-echo "PLUTO LoRA Curriculum Experiment (LLM-based)"
+echo "PLUTO LoRA Curriculum Experiment (RandomBucket-FT)"
 echo "=============================================="
 echo "Curriculum filters: $SCENARIO_FILTER_STAGE1, $SCENARIO_FILTER_STAGE2, $SCENARIO_FILTER_STAGE3"
 echo "Experiment base: $CURRICULUM_BASE_EXP"
@@ -154,11 +190,11 @@ fi
 
 echo ""
 echo "=============================================="
-echo "EXPERIMENT: LLM-based curriculum fine-tuning"
+echo "EXPERIMENT: RandomBucket curriculum fine-tuning"
 echo "=============================================="
 
 STAGE1_EXP="${CURRICULUM_BASE_EXP}_stage1_low"
-echo "Stage 1/3: LLM EASY scenarios"
+echo "Stage 1/3: random EASY bucket"
 run_lora_train \
     "$STAGE1_EXP" \
     "pretrained_ckpt" \
@@ -170,7 +206,7 @@ STAGE1_CKPT="$(find_latest_checkpoint "$STAGE1_EXP")"
 echo "Stage 1 checkpoint: $STAGE1_CKPT"
 
 STAGE2_EXP="${CURRICULUM_BASE_EXP}_stage2_mid"
-echo "Stage 2/3: LLM weighted curriculum"
+echo "Stage 2/3: weighted random-bucket curriculum"
 run_lora_train \
     "$STAGE2_EXP" \
     "checkpoint" \
@@ -185,7 +221,7 @@ STAGE2_CKPT="$(find_latest_checkpoint "$STAGE2_EXP")"
 echo "Stage 2 checkpoint: $STAGE2_CKPT"
 
 STAGE3_EXP="${CURRICULUM_BASE_EXP}_stage3_high"
-echo "Stage 3/3: LLM hard-weighted curriculum"
+echo "Stage 3/3: hard-weighted random-bucket curriculum"
 run_lora_train \
     "$STAGE3_EXP" \
     "checkpoint" \
@@ -200,7 +236,7 @@ CURRICULUM_CKPT="$(find_latest_checkpoint "$STAGE3_EXP")"
 
 echo ""
 echo "=============================================="
-echo "Done: LLM-based curriculum experiment complete"
+echo "Done: RandomBucket-FT experiment complete"
 echo "=============================================="
-echo "Curriculum checkpoint: $CURRICULUM_CKPT"
-echo "Use run_lora_experiment_uniform.sh for the uniform-principle curriculum baseline."
+echo "RandomBucket curriculum checkpoint: $CURRICULUM_CKPT"
+echo "Use run_lora_experiment_uniform.sh for the no-curriculum uniform FT baseline."

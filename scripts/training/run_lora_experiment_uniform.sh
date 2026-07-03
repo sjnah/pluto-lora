@@ -69,23 +69,9 @@ find_latest_checkpoint() {
     echo "$checkpoint"
 }
 
-if [ -z "$CONDA_DEFAULT_ENV" ] || [ "$CONDA_DEFAULT_ENV" != "nuplan" ]; then
-    echo "Activating nuplan environment..."
-    eval "$(conda shell.bash hook)"
-    conda activate nuplan
-fi
-
-if [ ! -d "$NUPLAN_DEVKIT_ROOT/nuplan" ]; then
-    echo "Error: nuPlan devkit package not found: $NUPLAN_DEVKIT_ROOT/nuplan"
-    echo "Expected workspace layout: ${WORKSPACE_ROOT}/pluto and ${WORKSPACE_ROOT}/nuplan-devkit"
-    exit 1
-fi
-
-export PYTHONPATH="${REPO_ROOT}:${NUPLAN_DEVKIT_ROOT}:${PYTHONPATH}"
-export NUPLAN_DATA_ROOT="${NUPLAN_DEVKIT_ROOT}/nuplan/database"
-export NUPLAN_MAPS_ROOT="${NUPLAN_DATA_ROOT}/maps"
-export NUPLAN_EXP_ROOT="${NUPLAN_DEVKIT_ROOT}/nuplan/exp"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
+# Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 
 echo "=============================================="
 echo "PLUTO LoRA Curriculum Experiment (Uniform)"

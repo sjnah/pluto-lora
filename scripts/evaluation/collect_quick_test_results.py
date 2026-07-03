@@ -6,6 +6,7 @@ Examples:
   python scripts/evaluation/collect_quick_test_results.py --tests val14
   python scripts/evaluation/collect_quick_test_results.py --tests test14-hard,interplan10
   python scripts/evaluation/collect_quick_test_results.py --tests val14 --methods zeroshot,rulebased,lossbased
+  python scripts/evaluation/collect_quick_test_results.py --tests val14 --methods curriculum_randombucket
   python scripts/evaluation/collect_quick_test_results.py --tests val14 --detail
   python scripts/evaluation/collect_quick_test_results.py --tests all --format csv --output artifacts/records/quick_test_summary.csv
 """
@@ -91,6 +92,7 @@ METHOD_SPECS = {
     "rulebased": MethodSpec("rulebased", "Rule-based"),
     "lossbased": MethodSpec("lossbased", "Loss-based"),
     "curriculum_uniform": MethodSpec("curriculum_uniform", "Curriculum uniform"),
+    "curriculum_randombucket": MethodSpec("curriculum_randombucket", "RandomBucket"),
     "curriculum_llmbased": MethodSpec("curriculum_llmbased", "Curriculum LLM-based"),
 }
 
@@ -99,6 +101,7 @@ DEFAULT_METHODS = [
     "rulebased",
     "lossbased",
     "curriculum_uniform",
+    "curriculum_randombucket",
     "curriculum_llmbased",
 ]
 
@@ -597,7 +600,10 @@ def main() -> int:
     parser.add_argument(
         "--methods",
         default="all",
-        help="Comma-separated methods or all. Methods: zeroshot, rulebased, lossbased, curriculum_uniform, curriculum_llmbased",
+        help=(
+            "Comma-separated methods or all. Methods: zeroshot, rulebased, lossbased, "
+            "curriculum_uniform, curriculum_randombucket, curriculum_llmbased"
+        ),
     )
     parser.add_argument("--exp-root", type=Path, default=DEFAULT_EXP_ROOT)
     parser.add_argument("--records-dir", type=Path, default=DEFAULT_RECORDS_DIR)

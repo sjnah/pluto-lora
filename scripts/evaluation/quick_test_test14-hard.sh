@@ -29,14 +29,15 @@ cd "$REPO_ROOT"
 # WARNING: If you get OOM (Out Of Memory) errors, enable batch processing (see BATCH_SIZE below).
 # The simulation framework builds all simulation objects upfront, so large scenario counts can cause OOM.
 # test14-hard.yaml contains 286 scenarios, so default to using all of them
-SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-50} # 286
+SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-286} # 286
 
 # Model selection flags. Set any flag to false/0/no to skip that model.
-RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true}
-RUN_RULE_BASED=${RUN_RULE_BASED:-true}
+RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
+RUN_RULE_BASED=${RUN_RULE_BASED:-false}
 RUN_LOSS_BASED=${RUN_LOSS_BASED:-true}
-RUN_UNIFORM=${RUN_UNIFORM:-true}
-RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-true}
+RUN_UNIFORM=${RUN_UNIFORM:-false}
+RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
+RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
 
 # Batch size for processing scenarios (to avoid OOM)
 # If set to a positive number, scenarios will be automatically split into batches and processed sequentially.
@@ -116,6 +117,7 @@ count_enabled_models() {
     is_enabled "$RUN_RULE_BASED" && count=$((count + 1))
     is_enabled "$RUN_LOSS_BASED" && count=$((count + 1))
     is_enabled "$RUN_UNIFORM" && count=$((count + 1))
+    is_enabled "$RUN_RANDOM_BUCKET" && count=$((count + 1))
     is_enabled "$RUN_LLM_CURRICULUM" && count=$((count + 1))
     echo "$count"
 }
@@ -189,22 +191,13 @@ run_enabled_models() {
     is_enabled "$RUN_RULE_BASED" && run_model_simulation "Rule-based" "rulebased" "$RULE_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_LOSS_BASED" && run_model_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
+    is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-based curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
 }
 
-# Activate conda environment
-if [ -z "$CONDA_DEFAULT_ENV" ] || [ "$CONDA_DEFAULT_ENV" != "nuplan" ]; then
-    echo "Activating nuplan environment..."
-    eval "$(conda shell.bash hook)"
-    conda activate nuplan
-fi
-
-# Set up PYTHONPATH
-export PYTHONPATH="${REPO_ROOT}:${NUPLAN_DEVKIT_ROOT}:${INTERPLAN_ROOT}:${PYTHONPATH}"
-export NUPLAN_DATA_ROOT="${NUPLAN_DEVKIT_ROOT}/nuplan/database"
-export NUPLAN_MAPS_ROOT="${NUPLAN_DATA_ROOT}/maps"
-export NUPLAN_EXP_ROOT="${NUPLAN_DEVKIT_ROOT}/nuplan/exp"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
+# Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 
 # Directory to save scenario token records
 SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"
@@ -238,6 +231,7 @@ fi
 is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based" "curriculum_lora_rulebased_stage3_high"
 is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "curriculum_lora_lossrank_stage3_high"
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
+is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
 is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-based curriculum" "curriculum_lora_llmbased_stage3_high"
 
 echo "📍 Using checkpoints:"
@@ -245,6 +239,7 @@ is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, 
 is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO + rule-based curriculum LoRA)"
 is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA)"
 is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT (PLUTO + uniform-principle curriculum LoRA)"
+is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
 is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM curriculum:  $CURRICULUM_CKPT (PLUTO + LLM-based curriculum LoRA)"
 echo ""
 echo "📍 Using scenario filter: test14-hard"
