@@ -7,7 +7,7 @@ from torch import Tensor
 from ..layers.embedding import PointsEncoder
 from ..layers.fourier_embedding import FourierEmbedding
 from ..layers.mlp_layer import MLPLayer
-from ..layers.transformer import as_bool_mask
+from ..layers.transformer import as_bool_mask, run_multihead_attention
 
 
 class DecoderLayer(nn.Module):
@@ -58,8 +58,13 @@ class DecoderLayer(nn.Module):
 
         tgt = tgt.transpose(1, 2).reshape(bs * M, R, D)
         tgt2 = self.norm1(tgt)
-        tgt2 = self.r2r_attn(
-            tgt2, tgt2, tgt2, key_padding_mask=tgt_key_padding_mask.repeat(M, 1)
+        tgt2 = run_multihead_attention(
+            self.r2r_attn,
+            tgt2,
+            tgt2,
+            tgt2,
+            key_padding_mask=tgt_key_padding_mask.repeat(M, 1),
+            need_weights=False,
         )[0]
         tgt = tgt + self.dropout1(tgt2)
 
@@ -67,8 +72,12 @@ class DecoderLayer(nn.Module):
         tgt_valid_mask = ~tgt_key_padding_mask.reshape(-1)
         tgt_valid = tgt_tmp[tgt_valid_mask]
         tgt2_valid = self.norm2(tgt_valid)
-        tgt2_valid, _ = self.m2m_attn(
-            tgt2_valid + m_pos, tgt2_valid + m_pos, tgt2_valid
+        tgt2_valid, _ = run_multihead_attention(
+            self.m2m_attn,
+            tgt2_valid + m_pos,
+            tgt2_valid + m_pos,
+            tgt2_valid,
+            need_weights=False,
         )
         tgt_valid = tgt_valid + self.dropout2(tgt2_valid)
         tgt = torch.zeros_like(tgt_tmp)
@@ -76,8 +85,13 @@ class DecoderLayer(nn.Module):
 
         tgt = tgt.reshape(bs, R, M, D).view(bs, R * M, D)
         tgt2 = self.norm3(tgt)
-        tgt2 = self.cross_attn(
-            tgt2, memory, memory, key_padding_mask=memory_key_padding_mask
+        tgt2 = run_multihead_attention(
+            self.cross_attn,
+            tgt2,
+            memory,
+            memory,
+            key_padding_mask=memory_key_padding_mask,
+            need_weights=False,
         )[0]
 
         tgt = tgt + self.dropout2(tgt2)

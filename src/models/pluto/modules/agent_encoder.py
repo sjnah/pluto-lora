@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from ..layers.common_layers import build_mlp
 from ..layers.embedding import NATSequenceEncoder
+from ..layers.transformer import run_multihead_attention
 
 
 class AgentEncoder(nn.Module):
@@ -132,11 +133,13 @@ class StateAttentionEncoder(nn.Module):
         if key_padding_mask is not None and key_padding_mask.dtype != torch.bool:
             key_padding_mask = key_padding_mask.bool()
 
-        x_state = self.attn(
+        x_state = run_multihead_attention(
+            self.attn,
             query=query,
             key=x_embed,
             value=x_embed,
             key_padding_mask=key_padding_mask,
+            need_weights=False,
         )[0]
 
         return x_state[:, 0]

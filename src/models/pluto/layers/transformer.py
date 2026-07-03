@@ -14,6 +14,28 @@ def as_bool_mask(mask: Optional[Tensor]) -> Optional[Tensor]:
     return mask.bool()
 
 
+def run_multihead_attention(attn: nn.MultiheadAttention, *args, **kwargs):
+    key_padding_mask = as_bool_mask(kwargs.get("key_padding_mask"))
+    kwargs["key_padding_mask"] = key_padding_mask
+
+    has_mask = key_padding_mask is not None or kwargs.get("attn_mask") is not None
+    mha_backend = getattr(torch.backends, "mha", None)
+    if not has_mask or mha_backend is None:
+        return attn(*args, **kwargs)
+
+    get_fastpath_enabled = getattr(mha_backend, "get_fastpath_enabled", None)
+    set_fastpath_enabled = getattr(mha_backend, "set_fastpath_enabled", None)
+    if get_fastpath_enabled is None or set_fastpath_enabled is None:
+        return attn(*args, **kwargs)
+
+    previous = get_fastpath_enabled()
+    set_fastpath_enabled(False)
+    try:
+        return attn(*args, **kwargs)
+    finally:
+        set_fastpath_enabled(previous)
+
+
 class Mlp(nn.Module):
     """MLP as used in Vision Transformer, MLP-Mixer and related networks"""
 
@@ -85,13 +107,14 @@ class TransformerEncoderLayer(nn.Module):
         return_attn_weights=False,
     ):
         src2 = self.norm1(src)
-        key_padding_mask = as_bool_mask(key_padding_mask)
-        src2, attn = self.attn(
+        src2, attn = run_multihead_attention(
+            self.attn,
             query=src2,
             key=src2,
             value=src2,
             attn_mask=mask,
             key_padding_mask=key_padding_mask,
+            need_weights=return_attn_weights,
         )
         src = src + self.drop_path1(src2)
         src = src + self.drop_path2(self.mlp(self.norm2(src)))
@@ -159,8 +182,8 @@ class CrossAttentionLayer(nn.Module):
         attn_mask: Optional[Tensor],
         key_padding_mask: Optional[Tensor],
     ) -> Tensor:
-        key_padding_mask = as_bool_mask(key_padding_mask)
-        x = self.attn(
+        x = run_multihead_attention(
+            self.attn,
             x,
             mem,
             mem,
@@ -218,21 +241,23 @@ class TransformerDecoderLayer(nn.Module):
         query_pos: Optional[Tensor] = None,
     ):
         q = k = self.with_pos_embed(tgt, query_pos)
-        tgt2 = self.self_attn(
+        tgt2 = run_multihead_attention(
+            self.self_attn,
             q,
             k,
             value=tgt,
             attn_mask=tgt_mask,
-            key_padding_mask=as_bool_mask(tgt_key_padding_mask),
+            key_padding_mask=tgt_key_padding_mask,
         )[0]
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
-        tgt2 = self.multihead_attn(
+        tgt2 = run_multihead_attention(
+            self.multihead_attn,
             query=self.with_pos_embed(tgt, query_pos),
             key=self.with_pos_embed(memory, pos),
             value=memory,
             attn_mask=memory_mask,
-            key_padding_mask=as_bool_mask(memory_key_padding_mask),
+            key_padding_mask=memory_key_padding_mask,
         )[0]
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
@@ -254,21 +279,23 @@ class TransformerDecoderLayer(nn.Module):
     ):
         tgt2 = self.norm1(tgt)
         q = k = self.with_pos_embed(tgt2, query_pos)
-        tgt2 = self.self_attn(
+        tgt2 = run_multihead_attention(
+            self.self_attn,
             q,
             k,
             value=tgt2,
             attn_mask=tgt_mask,
-            key_padding_mask=as_bool_mask(tgt_key_padding_mask),
+            key_padding_mask=tgt_key_padding_mask,
         )[0]
         tgt = tgt + self.dropout1(tgt2)
         tgt2 = self.norm2(tgt)
-        tgt2 = self.multihead_attn(
+        tgt2 = run_multihead_attention(
+            self.multihead_attn,
             query=self.with_pos_embed(tgt2, query_pos),
             key=self.with_pos_embed(memory, pos),
             value=memory,
             attn_mask=memory_mask,
-            key_padding_mask=as_bool_mask(memory_key_padding_mask),
+            key_padding_mask=memory_key_padding_mask,
         )[0]
         tgt = tgt + self.dropout2(tgt2)
         tgt2 = self.norm3(tgt)
