@@ -19,6 +19,28 @@ def run_multihead_attention(attn: nn.MultiheadAttention, *args, **kwargs):
     kwargs["key_padding_mask"] = key_padding_mask
 
     has_mask = key_padding_mask is not None or kwargs.get("attn_mask") is not None
+    if has_mask:
+        args = list(args)
+        query = kwargs.get("query", args[0] if len(args) > 0 else None)
+        key = kwargs.get("key", args[1] if len(args) > 1 else None)
+        value = kwargs.get("value", args[2] if len(args) > 2 else None)
+
+        # PyTorch 2.0 native MHA fast path can warn after internally
+        # canonicalizing bool masks. Break self-attention identity to use the
+        # standard path while preserving tensor values and storage.
+        if isinstance(query, Tensor) and query is key and key is value:
+            key_view = key.view_as(key)
+            value_view = value.view_as(value)
+            if "key" in kwargs:
+                kwargs["key"] = key_view
+            elif len(args) > 1:
+                args[1] = key_view
+            if "value" in kwargs:
+                kwargs["value"] = value_view
+            elif len(args) > 2:
+                args[2] = value_view
+        args = tuple(args)
+
     mha_backend = getattr(torch.backends, "mha", None)
     if not has_mask or mha_backend is None:
         return attn(*args, **kwargs)
