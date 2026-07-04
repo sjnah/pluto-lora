@@ -57,6 +57,13 @@ TEST_SPECS = {
     "val_medium": TestSpec("val_medium", "Val medium", "llm_guided_val_medium", "nuplan", 50),
     "val_hard": TestSpec("val_hard", "Val hard", "llm_guided_val_hard", "nuplan", 50),
     "test14_hard": TestSpec("test14_hard", "Test14-hard", "test14_hard", "nuplan", 286),
+    "test14_hard_sentinel": TestSpec(
+        "test14_hard_sentinel",
+        "Test14-hard sentinel",
+        "test14_hard_sentinel",
+        "nuplan",
+        93,
+    ),
     "interplan10": TestSpec("interplan10", "InterPlan interplan10", "interplan10", "interplan", 80),
     "interplan_benchmark": TestSpec(
         "interplan_benchmark",
@@ -79,6 +86,9 @@ TEST_ALIASES = {
     "test14": ["test14_hard"],
     "test14-hard": ["test14_hard"],
     "test14_hard": ["test14_hard"],
+    "test14-hard-sentinel": ["test14_hard_sentinel"],
+    "test14_hard_sentinel": ["test14_hard_sentinel"],
+    "sentinel": ["test14_hard_sentinel"],
     "interplan": ["interplan10", "interplan_benchmark"],
     "interplan10": ["interplan10"],
     "interplan-benchmark": ["interplan_benchmark"],
@@ -598,7 +608,7 @@ def main() -> int:
     parser.add_argument(
         "--tests",
         default="all",
-        help="Comma-separated tests: all, val14, test14-hard, interplan, interplan10, benchmark_scenarios.",
+        help="Comma-separated tests: all, val14, test14-hard, test14-hard-sentinel, interplan, interplan10, benchmark_scenarios.",
     )
     parser.add_argument(
         "--methods",

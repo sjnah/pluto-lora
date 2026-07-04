@@ -26,7 +26,7 @@ RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
 RUN_RULE_BASED=${RUN_RULE_BASED:-false}
 RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
 RUN_UNIFORM=${RUN_UNIFORM:-false}
-RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-true}
+RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
 RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
 
 # Batch size for processing scenarios (to avoid OOM)
@@ -34,7 +34,7 @@ RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
 # Example: BATCH_SIZE=200 will process scenarios in batches of 200.
 # Set to empty or 0 to disable batching (not recommended for large scenario counts).
 # Recommended: 150-300 depending on available memory
-BATCH_SIZE=${BATCH_SIZE:-200}
+BATCH_SIZE=${BATCH_SIZE:-100}
 
 # Helper function to run simulation (with automatic batching if enabled)
 run_simulation() {

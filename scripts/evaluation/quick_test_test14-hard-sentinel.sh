@@ -1,17 +1,22 @@
 #!/bin/bash
 ################################################################################
-# Quick Test: Test14-Hard Filter
-# Uses test14-hard.yaml scenario filter with nuplan-v1.1_test dataset
-# Validates that metrics are collected correctly
+# Quick Test: Test14-Hard Sentinel Filter
+# Uses test14-hard-sentinel.yaml scenario filter with nuplan-v1.1_test dataset.
 #
-# Simulation Type:
-#   - Default: reactive (closed_loop_reactive_agents) - More realistic, other vehicles react to ego
-#   - Alternative: nonreactive (closed_loop_nonreactive_agents) - Other vehicles follow fixed trajectories
+# The current generated sentinel filter contains 93 scenes:
+#   - collision failure: 15
+#   - drivable/off-route failure: 15
+#   - traffic-rule failure: 15
+#   - low progress: 15
+#   - common success / fallback: 40
+#
+# Default methods:
+#   zero-shot, loss-based, RandomBucket, LLM-guided
 #
 # Usage:
-#   ./quick_test_test14.sh                    # Uses reactive (default)
-#   SIMULATION_TYPE=nonreactive ./quick_test_test14.sh  # Use nonreactive
-#   SIMULATION_TYPE=reactive ./quick_test_test14.sh     # Explicitly use reactive
+#   ./quick_test_test14-hard-sentinel.sh
+#   SIMULATION_TYPE=nonreactive ./quick_test_test14-hard-sentinel.sh
+#   RUN_ZERO_SHOT=false RUN_LOSS_BASED=true ./quick_test_test14-hard-sentinel.sh
 ################################################################################
 
 set -e
@@ -23,32 +28,25 @@ NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
 
-# Configuration: Number of scenarios to evaluate per stage
-# This ensures all enabled methods use the same scenarios
-# Note: Sequential worker is used to minimize memory usage. 
-# WARNING: If you get OOM (Out Of Memory) errors, enable batch processing (see BATCH_SIZE below).
-# The simulation framework builds all simulation objects upfront, so large scenario counts can cause OOM.
-# test14-hard.yaml contains 286 scenarios, so default to using all of them
-SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-286} # 286
+FILTER_NAME="test14-hard-sentinel"
+EXPERIMENT_SUFFIX="test14_hard_sentinel"
+SCENARIO_BUILDER="nuplan_v1_1_test"
 
-# Model selection flags. Set any flag to false/0/no to skip that model.
-RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true}
+# By default, count the generated filter tokens at runtime.
+SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-auto}
+
+# Model selection flags. Sentinel defaults to the four methods used to build it.
+RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true} #
 RUN_RULE_BASED=${RUN_RULE_BASED:-false}
-RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
+RUN_LOSS_BASED=${RUN_LOSS_BASED:-true} #
 RUN_UNIFORM=${RUN_UNIFORM:-false}
-RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
-RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
+RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-true} #
+RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-true} #
 
-# Batch size for processing scenarios (to avoid OOM)
-# If set to a positive number, scenarios will be automatically split into batches and processed sequentially.
-# Example: BATCH_SIZE=200 will process scenarios in batches of 200.
-# Set to empty or 0 to disable batching (not recommended for large scenario counts).
-# Recommended: 150-300 depending on available memory
+# Batch size is only used by the nonreactive path.
 BATCH_SIZE=${BATCH_SIZE:-50}
 
-# Simulation type: reactive or nonreactive
-# For test datasets, reactive agents provide more realistic evaluation as other vehicles react to ego actions
-# Set to "reactive" for closed_loop_reactive_agents or "nonreactive" for closed_loop_nonreactive_agents
+# Simulation type: reactive or nonreactive.
 SIMULATION_TYPE=${SIMULATION_TYPE:-reactive}
 
 # Console progress controls. The direct reactive path needs verbose=true
@@ -56,14 +54,12 @@ SIMULATION_TYPE=${SIMULATION_TYPE:-reactive}
 SIMULATION_VERBOSE=${SIMULATION_VERBOSE:-true}
 ENABLE_PROGRESS_BAR=${ENABLE_PROGRESS_BAR:-true}
 
-# Helper function to run simulation (with automatic batching if enabled)
 run_simulation() {
     local filter=$1
     local ckpt=$2
     local experiment=$3
     local scenario_builder=${4:-""}
-    
-    # Determine simulation type
+
     if [ "$SIMULATION_TYPE" = "reactive" ]; then
         local simulation_config="closed_loop_reactive_agents"
         local observation_config="idm_agents_observation"
@@ -71,13 +67,11 @@ run_simulation() {
         local simulation_config="closed_loop_nonreactive_agents"
         local observation_config="box_observation"
     fi
-    
+
     if [ -n "$BATCH_SIZE" ] && [ "$BATCH_SIZE" -gt 0 ] && [ "$SIMULATION_TYPE" != "reactive" ]; then
-        # Batching is only supported for nonreactive agents
-        # run_simulation_batched.py hardcodes nonreactive agents
         local builder_arg=""
         [ -n "$scenario_builder" ] && builder_arg="--scenario-builder $scenario_builder"
-        
+
         python ${SCRIPT_DIR}/run_simulation_batched.py \
             --filter "$filter" \
             --ckpt "$ckpt" \
@@ -87,15 +81,14 @@ run_simulation() {
             --simulation-verbose "$SIMULATION_VERBOSE" \
             $builder_arg
     else
-        # Run directly (either batching disabled, reactive agents, or batching not supported)
         if [ -n "$BATCH_SIZE" ] && [ "$BATCH_SIZE" -gt 0 ] && [ "$SIMULATION_TYPE" = "reactive" ]; then
-            echo "⚠️  Warning: Batching is not yet supported for reactive agents."
-            echo "   Running without batching..."
+            echo "Warning: batching is not yet supported for reactive agents."
+            echo "Running without batching..."
         fi
-        
+
         local builder_arg=""
         [ -n "$scenario_builder" ] && builder_arg="scenario_builder=$scenario_builder"
-        
+
         python -X faulthandler ${REPO_ROOT}/run_simulation.py \
             +simulation=$simulation_config \
             observation=$observation_config \
@@ -139,7 +132,7 @@ find_lora_checkpoint() {
     exp_dir=$(find outputs -type d -name "$experiment_name" 2>/dev/null | sort -r | head -n1)
 
     if [ -z "$exp_dir" ]; then
-        echo "Error: ${label} LoRA training output directory not found!"
+        echo "Error: ${label} LoRA training output directory not found."
         echo ""
         echo "   Searched for: ${experiment_name}"
         echo ""
@@ -158,7 +151,7 @@ find_lora_checkpoint() {
     fi
 
     if [ ! -f "$ckpt" ]; then
-        echo "Error: ${label} checkpoint not found!"
+        echo "Error: ${label} checkpoint not found."
         echo "   Tried: ${exp_dir}/lora_checkpoints/merged_final.ckpt"
         echo "   Tried: ${exp_dir}/checkpoints/last.ckpt"
         echo "   Available files:"
@@ -174,66 +167,84 @@ run_model_simulation() {
     local label=$1
     local slug=$2
     local ckpt=$3
-    local filter=$4
-    local experiment_suffix=$5
-    local scenario_builder=${6:-""}
-    local experiment="quick_test_${slug}_${experiment_suffix}"
+    local experiment="quick_test_${slug}_${EXPERIMENT_SUFFIX}"
 
     echo ""
-    echo "Running ${label} on ${filter}..."
-    run_simulation "$filter" "$ckpt" "$experiment" "$scenario_builder"
+    echo "Running ${label} on ${FILTER_NAME}..."
+    run_simulation "$FILTER_NAME" "$ckpt" "$experiment" "$SCENARIO_BUILDER"
 
     local metrics_dir="${NUPLAN_EXP_ROOT}/exp/${experiment}/metrics"
     local record_file="${SCENARIO_RECORDS_DIR}/${experiment}.json"
     python ${REPO_ROOT}/scripts/evaluation/save_scenario_tokens.py "$metrics_dir" "$record_file" || echo "Could not save scenario tokens"
 
-    echo "${label} ${filter} done!"
+    echo "${label} ${FILTER_NAME} done."
 }
 
 run_enabled_models() {
-    local filter=$1
-    local experiment_suffix=$2
-    local scenario_builder=${3:-""}
-
-    is_enabled "$RUN_ZERO_SHOT" && run_model_simulation "Zero-shot" "zeroshot" "$ZERO_SHOT_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
-    is_enabled "$RUN_RULE_BASED" && run_model_simulation "Rule-based" "rulebased" "$RULE_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
-    is_enabled "$RUN_LOSS_BASED" && run_model_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
-    is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
-    is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
-    is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-based curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
+    is_enabled "$RUN_ZERO_SHOT" && run_model_simulation "Zero-shot" "zeroshot" "$ZERO_SHOT_CKPT"
+    is_enabled "$RUN_RULE_BASED" && run_model_simulation "Rule-based" "rulebased" "$RULE_BASED_CKPT"
+    is_enabled "$RUN_LOSS_BASED" && run_model_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT"
+    is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT"
+    is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT"
+    is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-guided curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT"
 }
 
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 
-# Directory to save scenario token records
 SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"
 mkdir -p "$SCENARIO_RECORDS_DIR"
 
+if [ ! -f "${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml" ]; then
+    echo "Error: sentinel scenario filter not found: ${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml"
+    echo "Generate it with: python scripts/evaluation/create_test14_hard_sentinel_filter.py"
+    exit 1
+fi
+
+if [ "$SCENARIOS_PER_STAGE" = "auto" ]; then
+    SCENARIOS_PER_STAGE=$(python - "$REPO_ROOT/config/scenario_filter/${FILTER_NAME}.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+in_tokens = False
+count = 0
+for line in path.read_text(encoding="utf-8").splitlines():
+    stripped = line.strip()
+    if stripped == "scenario_tokens:":
+        in_tokens = True
+        continue
+    if in_tokens and stripped and not stripped.startswith("-"):
+        break
+    if in_tokens and stripped.startswith("-"):
+        count += 1
+print(count)
+PY
+)
+fi
+
 ENABLED_MODEL_COUNT=$(count_enabled_models)
 if [ "$ENABLED_MODEL_COUNT" -eq 0 ]; then
-    echo "Error: All model flags are disabled. Enable at least one model."
+    echo "Error: all model flags are disabled. Enable at least one model."
     exit 1
 fi
 
 TOTAL_SCENARIOS=$((SCENARIOS_PER_STAGE * ENABLED_MODEL_COUNT))
 
 echo "=============================================="
-echo "Quick Test (Test14-Hard): ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per method)"
-echo "Using test14-hard.yaml filter with nuplan-v1.1_test dataset"
-echo "Simulation type: ${SIMULATION_TYPE} (other vehicles ${SIMULATION_TYPE} to ego)"
+echo "Quick Test (Test14-Hard Sentinel): ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per method)"
+echo "Using ${FILTER_NAME}.yaml filter with nuplan-v1.1_test dataset"
+echo "Simulation type: ${SIMULATION_TYPE}"
 echo "Simulation verbose: ${SIMULATION_VERBOSE}"
 echo "Progress bar: ${ENABLE_PROGRESS_BAR}"
-echo "Validating metric collection"
 echo "=============================================="
 echo ""
 
-# Find checkpoints
 if is_enabled "$RUN_ZERO_SHOT"; then
     ZERO_SHOT_CKPT="$(pwd)/checkpoints/pluto_1M_aux_cil.ckpt"
     if [ ! -f "$ZERO_SHOT_CKPT" ]; then
-        echo "Error: Zero-shot checkpoint not found: $ZERO_SHOT_CKPT"
+        echo "Error: zero-shot checkpoint not found: $ZERO_SHOT_CKPT"
         exit 1
     fi
 fi
@@ -242,34 +253,27 @@ is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based
 is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "curriculum_lora_lossrank_stage3_high"
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
-is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-based curriculum" "curriculum_lora_llmbased_stage3_high"
+is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "curriculum_lora_llmbased_stage3_high"
 
-echo "📍 Using checkpoints:"
-is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, no fine-tuning)"
-is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO + rule-based curriculum LoRA)"
-is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA)"
-is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT (PLUTO + uniform-principle curriculum LoRA)"
-is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
-is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM curriculum:  $CURRICULUM_CKPT (PLUTO + LLM-based curriculum LoRA)"
+echo "Using checkpoints:"
+is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT"
+is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT"
+is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT"
+is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT"
+is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT"
+is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT"
 echo ""
-echo "📍 Using scenario filter: test14-hard"
-echo "📍 Using scenario builder: nuplan_v1_1_test (nuplan-v1.1_test dataset)"
+echo "Using scenario filter: ${FILTER_NAME}"
+echo "Using scenario builder: ${SCENARIO_BUILDER}"
 echo ""
 
 START_TIME=$(date +%s)
 
-################################################################################
-# Test: Test14-Hard scenarios
-################################################################################
 echo ""
 echo "=============================================="
-echo "Testing Test14-Hard - ${SCENARIOS_PER_STAGE} scenarios"
+echo "Testing Test14-Hard Sentinel - ${SCENARIOS_PER_STAGE} scenarios"
 echo "=============================================="
-run_enabled_models test14-hard test14_hard nuplan_v1_1_test
-
-################################################################################
-# Summary and Analysis
-################################################################################
+run_enabled_models
 
 END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
@@ -278,19 +282,20 @@ SECONDS=$((DURATION % 60))
 
 echo ""
 echo "=============================================="
-echo "✅ Quick test (test14-hard) complete!"
+echo "Quick test (test14-hard sentinel) complete."
 echo "=============================================="
 echo "Time taken: ${MINUTES}m ${SECONDS}s"
 echo ""
-echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_*_test14_hard"
+echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_*_${EXPERIMENT_SUFFIX}"
 echo ""
-echo "Analyzing results..."
-python ${REPO_ROOT}/scripts/analysis/analyze_quick_test.py
+echo "Collecting result summary..."
+python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
+    --tests test14-hard-sentinel \
+    --methods zeroshot,lossbased,curriculum_randombucket,curriculum_llmbased \
+    --detail || echo "Could not collect sentinel summary"
 
 echo ""
-echo "=============================================="
 echo "Next steps:"
-echo "  1. Check if NR-CLS metrics are present"
-echo "  2. Compare results with other test datasets"
-echo "  3. Verify all scenarios were processed correctly"
-echo "=============================================="
+echo "  1. Check NR-CLS and per-metric columns in the result summary."
+echo "  2. Compare sentinel behavior against full Test14-hard."
+echo "  3. Inspect scenario records in ${SCENARIO_RECORDS_DIR}."

@@ -1,7 +1,9 @@
+import json
+import logging
 import os
 import time
 from pathlib import Path
-from typing import List, Optional, Type
+from typing import Dict, List, Optional, Type
 
 import numpy as np
 import numpy.typing as npt
@@ -34,6 +36,8 @@ from ..post_processing.emergency_brake import EmergencyBrake
 from ..post_processing.trajectory_evaluator import TrajectoryEvaluator
 from ..scenario_manager.scenario_manager import ScenarioManager
 from .ml_planner_utils import global_trajectory_to_states, load_checkpoint
+
+logger = logging.getLogger(__name__)
 
 
 class PlutoPlanner(AbstractPlanner):
@@ -98,6 +102,14 @@ class PlutoPlanner(AbstractPlanner):
         self._inference_runtimes: List[float] = []
 
         self._scenario_type = scenario.scenario_type
+        self._profile_enabled = self._env_flag_enabled("PLUTO_PLANNER_PROFILE")
+        self._profile_sync_cuda = self._env_flag_enabled(
+            "PLUTO_PLANNER_PROFILE_SYNC_CUDA", default="1"
+        )
+        self._profile_totals: Dict[str, float] = {}
+        self._profile_counts: Dict[str, int] = {}
+        self._profile_steps = 0
+        self._profile_emitted = False
 
         # post-processing
         self._trajectory_evaluator = TrajectoryEvaluator(eval_dt, eval_num_frames)
@@ -111,6 +123,62 @@ class PlutoPlanner(AbstractPlanner):
             else:
                 self.video_dir = Path(os.getcwd())
             self.video_dir.mkdir(exist_ok=True, parents=True)
+
+    @staticmethod
+    def _env_flag_enabled(name: str, default: str = "0") -> bool:
+        return os.environ.get(name, default).lower() in {"1", "true", "yes", "on"}
+
+    def _profile_start(self) -> Optional[float]:
+        return time.perf_counter() if self._profile_enabled else None
+
+    def _profile_stop(self, name: str, start_time: Optional[float]) -> None:
+        if start_time is None:
+            return
+        elapsed = time.perf_counter() - start_time
+        self._profile_totals[name] = self._profile_totals.get(name, 0.0) + elapsed
+        self._profile_counts[name] = self._profile_counts.get(name, 0) + 1
+
+    def _profile_cuda_barrier(self) -> None:
+        if (
+            self._profile_enabled
+            and self._profile_sync_cuda
+            and self.device.type == "cuda"
+            and torch.cuda.is_available()
+        ):
+            torch.cuda.synchronize(self.device)
+
+    def _emit_profile_summary(self) -> None:
+        if not self._profile_enabled or self._profile_emitted:
+            return
+
+        means_ms = {
+            name: (self._profile_totals[name] / self._profile_counts[name]) * 1000.0
+            for name in self._profile_totals
+        }
+        payload = {
+            "event": "pluto_planner_profile",
+            "device": str(self.device),
+            "scenario_log_name": getattr(self._scenario, "log_name", None),
+            "scenario_name": getattr(self._scenario, "scenario_name", None),
+            "scenario_token": getattr(self._scenario, "token", None),
+            "scenario_type": getattr(self._scenario, "scenario_type", None),
+            "steps": self._profile_steps,
+            "totals_s": self._profile_totals,
+            "means_ms": means_ms,
+            "counts": self._profile_counts,
+            "sync_cuda": self._profile_sync_cuda,
+        }
+        line = json.dumps(payload, sort_keys=True)
+        profile_path = os.environ.get("PLUTO_PLANNER_PROFILE_PATH")
+        if profile_path:
+            output_path = Path(profile_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("a", encoding="utf-8") as profile_file:
+                profile_file.write(line + "\n")
+        else:
+            print(f"PLUTO_PLANNER_PROFILE {line}", flush=True)
+
+        self._profile_emitted = True
 
     @torch.no_grad()
     def _infer_model(self, features: FeaturesType) -> npt.NDArray[np.float32]:
@@ -131,17 +199,19 @@ class PlutoPlanner(AbstractPlanner):
         torch.set_grad_enabled(False)
 
         if self._planner_ckpt is not None:
+            profile_start = self._profile_start()
             checkpoint_state = load_checkpoint(self._planner_ckpt, device=self.device)
+            self._profile_stop("initialize.checkpoint_load", profile_start)
             
             # Debug: Log checkpoint info
-            import logging
-            logger = logging.getLogger(__name__)
             logger.debug(f"Loading checkpoint from: {self._planner_ckpt}")
             logger.debug(f"Checkpoint state dict has {len(checkpoint_state)} keys")
             logger.debug(f"Model state dict has {len(self._planner.state_dict())} keys")
             
             # Use strict=False to allow missing keys (e.g., from LoRA merged checkpoints)
+            profile_start = self._profile_start()
             missing_keys, unexpected_keys = self._planner.load_state_dict(checkpoint_state, strict=False)
+            self._profile_stop("initialize.load_state_dict", profile_start)
             
             # Filter out expected missing/unexpected keys for LoRA merged checkpoints
             # These are typically from model structure differences (e.g., pos_emb vs lora_base_pos_emb)
@@ -185,6 +255,7 @@ class PlutoPlanner(AbstractPlanner):
                     else:
                         logger.warning(f"  Unexpected keys (first 10): {other_unexpected[:10]}...")
 
+        profile_start = self._profile_start()
         self._planner.eval()
         # Move model to device, but fallback to CPU if CUDA fails (e.g., in Ray workers)
         try:
@@ -197,9 +268,11 @@ class PlutoPlanner(AbstractPlanner):
                 self._planner = self._planner.to(self.device)
             else:
                 raise
+        self._profile_stop("initialize.model_to_device", profile_start)
 
         self._initialization = initialization
 
+        profile_start = self._profile_start()
         self._scenario_manager = ScenarioManager(
             map_api=initialization.map_api,
             ego_state=None,
@@ -210,6 +283,7 @@ class PlutoPlanner(AbstractPlanner):
 
         if self._render:
             self._scene_render.scenario_manager = self._scenario_manager
+        self._profile_stop("initialize.scenario_manager", profile_start)
 
     def name(self) -> str:
         """Inherited, see superclass."""
@@ -226,33 +300,53 @@ class PlutoPlanner(AbstractPlanner):
         Infer relative trajectory poses from model and convert to absolute agent states wrapped in a trajectory.
         Inherited, see superclass.
         """
+        step_start = self._profile_start()
+        if self._profile_enabled:
+            self._profile_steps += 1
+
         start_time = time.perf_counter()
         self._feature_building_runtimes.append(time.perf_counter() - start_time)
 
         start_time = time.perf_counter()
 
         ego_state = current_input.history.ego_states[-1]
+        profile_start = self._profile_start()
         self._scenario_manager.update_ego_state(ego_state)
+        self._profile_stop("step.update_ego_state", profile_start)
+
+        profile_start = self._profile_start()
         self._scenario_manager.update_drivable_area_map()
+        self._profile_stop("step.update_drivable_area_map", profile_start)
 
         planning_trajectory = self._run_planning_once(current_input)
 
         self._inference_runtimes.append(time.perf_counter() - start_time)
+        self._profile_stop("step.total_compute_planner_trajectory", step_start)
 
         return planning_trajectory
 
     def _run_planning_once(self, current_input: PlannerInput):
         ego_state = current_input.history.ego_states[-1]
 
+        profile_start = self._profile_start()
         planner_feature = self._planner_feature_builder.get_features_from_simulation(
             current_input, self._initialization
         )
+        self._profile_stop("step.feature_build", profile_start)
 
+        profile_start = self._profile_start()
         planner_feature_torch = planner_feature.collate(
             [planner_feature.to_feature_tensor()]
         ).to_device(self.device)
+        self._profile_stop("step.feature_tensor_to_device", profile_start)
 
+        profile_start = self._profile_start()
+        self._profile_cuda_barrier()
         out = self._planner.forward(planner_feature_torch.data)
+        self._profile_cuda_barrier()
+        self._profile_stop("step.model_forward", profile_start)
+
+        profile_start = self._profile_start()
         candidate_trajectories = (
             out["candidate_trajectories"][0].cpu().numpy().astype(np.float64)
         )
@@ -268,40 +362,56 @@ class PlutoPlanner(AbstractPlanner):
             if "output_ref_free_trajectory" in out
             else None
         )
+        self._profile_stop("step.output_to_numpy", profile_start)
 
+        profile_start = self._profile_start()
         candidate_trajectories, learning_based_score = self._trim_candidates(
             candidate_trajectories,
             probability,
             current_input.history.ego_states[-1],
             ref_free_trajectory,
         )
+        self._profile_stop("step.trim_candidates", profile_start)
 
+        profile_start = self._profile_start()
+        agents_info = self._get_agent_info(planner_feature.data, predictions, ego_state)
+        self._profile_stop("step.agent_info", profile_start)
+
+        profile_start = self._profile_start()
+        baseline_path = self._get_baseline_path_safe(ego_state)
+        self._profile_stop("step.baseline_path", profile_start)
+
+        profile_start = self._profile_start()
         rule_based_scores = self._trajectory_evaluator.evaluate(
             candidate_trajectories=candidate_trajectories,
             init_ego_state=current_input.history.ego_states[-1],
             detections=current_input.history.observations[-1],
             traffic_light_data=current_input.traffic_light_data,
-            agents_info=self._get_agent_info(
-                planner_feature.data, predictions, ego_state
-            ),
+            agents_info=agents_info,
             route_lane_dict=self._scenario_manager.get_route_lane_dicts(),
             drivable_area_map=self._scenario_manager.drivable_area_map,
-            baseline_path=self._get_baseline_path_safe(ego_state),
+            baseline_path=baseline_path,
         )
+        self._profile_stop("step.trajectory_evaluation", profile_start)
 
+        profile_start = self._profile_start()
         final_scores = (
             rule_based_scores + self._learning_based_score_weight * learning_based_score
         )
 
         best_candidate_idx = final_scores.argmax()
+        self._profile_stop("step.score_selection", profile_start)
 
+        profile_start = self._profile_start()
         trajectory = self._emergency_brake.brake_if_emergency(
             ego_state,
             self._trajectory_evaluator.time_to_at_fault_collision(best_candidate_idx),
             candidate_trajectories[best_candidate_idx],
         )
+        self._profile_stop("step.emergency_brake", profile_start)
 
         # no emergency
+        profile_start = self._profile_start()
         if trajectory is None:
             trajectory = candidate_trajectories[best_candidate_idx, 1:]
             trajectory = InterpolatedTrajectory(
@@ -313,8 +423,10 @@ class PlutoPlanner(AbstractPlanner):
                     include_ego_state=False,
                 )
             )
+        self._profile_stop("step.trajectory_conversion", profile_start)
 
         if self._render:
+            profile_start = self._profile_start()
             self._imgs.append(
                 self._scene_render.render_from_simulation(
                     current_input=current_input,
@@ -331,6 +443,7 @@ class PlutoPlanner(AbstractPlanner):
                     return_img=True,
                 )
             )
+            self._profile_stop("step.render", profile_start)
 
         return trajectory
 
@@ -534,6 +647,8 @@ class PlutoPlanner(AbstractPlanner):
 
     def generate_planner_report(self, clear_stats: bool = True) -> PlannerReport:
         """Inherited, see superclass."""
+        self._emit_profile_summary()
+
         report = MLPlannerReport(
             compute_trajectory_runtimes=self._compute_trajectory_runtimes,
             feature_building_runtimes=self._feature_building_runtimes,

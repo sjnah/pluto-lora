@@ -164,3 +164,4 @@ outputs/
 checkpoints/
 archive/
 artifacts/
+.batch_filters/

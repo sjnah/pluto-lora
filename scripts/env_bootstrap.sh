@@ -19,7 +19,7 @@ fi
 INTERPLAN_ROOT="${INTERPLAN_ROOT:-${WORKSPACE_ROOT}/interPlan}"
 
 choose_exp_root() {
-    local candidate="${NUPLAN_EXP_ROOT:-${NUPLAN_RUNTIME_ROOT}/exp}"
+    local candidate="${NUPLAN_RUNTIME_ROOT}/exp"
     local fallback="${NUPLAN_FALLBACK_EXP_ROOT:-${WORKSPACE_ROOT}/nuplan-exp}"
     local probe=".write_test_$$"
     local explicit_exp_root="${NUPLAN_EXP_ROOT:-}"

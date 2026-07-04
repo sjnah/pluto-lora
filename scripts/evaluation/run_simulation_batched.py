@@ -18,9 +18,18 @@ SCRIPT_DIR = Path(__file__).parent.absolute()
 REPO_ROOT = SCRIPT_DIR.parent.parent
 WORKSPACE_ROOT = REPO_ROOT.parent
 NUPLAN_DEVKIT_ROOT = Path(os.environ.get("NUPLAN_DEVKIT_ROOT", WORKSPACE_ROOT / "nuplan-devkit"))
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 if "NUPLAN_RUNTIME_ROOT" in os.environ:
     NUPLAN_RUNTIME_ROOT = Path(os.environ["NUPLAN_RUNTIME_ROOT"])
-elif Path("/root/vessl-nuplan").exists():
+elif path_exists(Path("/root/vessl-nuplan")):
     NUPLAN_RUNTIME_ROOT = Path("/root/vessl-nuplan")
 else:
     NUPLAN_RUNTIME_ROOT = NUPLAN_DEVKIT_ROOT / "nuplan"
@@ -28,9 +37,10 @@ else:
 
 def resolve_exp_root(runtime_root: Path) -> Path:
     explicit = os.environ.get("NUPLAN_EXP_ROOT")
-    candidate = Path(explicit) if explicit else runtime_root / "exp"
+    preserve_explicit = os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1"
+    candidate = Path(explicit) if explicit and preserve_explicit else runtime_root / "exp"
 
-    if os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1" and explicit:
+    if preserve_explicit and explicit:
         return candidate
 
     try:
@@ -40,7 +50,7 @@ def resolve_exp_root(runtime_root: Path) -> Path:
         probe.unlink(missing_ok=True)
         return candidate
     except OSError as error:
-        if explicit:
+        if preserve_explicit and explicit:
             raise RuntimeError(
                 f"Explicit NUPLAN_EXP_ROOT is not writable: {candidate}. "
                 "Fix the mount permissions or choose a writable shared exp root."
@@ -195,6 +205,45 @@ def completed_tokens_from_simulation_log(experiment_name: str) -> Set[str]:
     return tokens
 
 
+def completed_tokens_from_metrics(experiment_name: str) -> Set[str]:
+    """Return tokens present in any metric parquet for one experiment directory."""
+    metrics_dir = EXP_ROOT / experiment_name / "metrics"
+    if not metrics_dir.exists():
+        return set()
+
+    tokens: Set[str] = set()
+    try:
+        import pandas as pd
+
+        preferred_files = [
+            metrics_dir / "no_ego_at_fault_collisions.parquet",
+            metrics_dir / "drivable_area_compliance.parquet",
+            metrics_dir / "ego_is_making_progress.parquet",
+        ]
+        candidate_files = [path for path in preferred_files if path.exists()]
+        if not candidate_files:
+            candidate_files = sorted(metrics_dir.glob("*.parquet"))
+
+        for metric_file in candidate_files:
+            df = pd.read_parquet(metric_file, columns=["scenario_name"])
+            tokens.update(str(token) for token in df["scenario_name"].dropna().unique())
+            if tokens:
+                break
+    except Exception as error:
+        print(f"⚠️  Could not read completed tokens from metrics for {experiment_name}: {error}")
+        return set()
+
+    return tokens
+
+
+def completed_tokens_from_existing_outputs(experiment_name: str) -> Set[str]:
+    """Return completed tokens from metrics first, then simulation logs."""
+    tokens = completed_tokens_from_metrics(experiment_name)
+    if tokens:
+        return tokens
+    return completed_tokens_from_simulation_log(experiment_name)
+
+
 def metrics_dir_has_parquet(experiment_name: str) -> bool:
     """Check whether an experiment has metric parquet outputs to aggregate."""
     metrics_dir = EXP_ROOT / experiment_name / "metrics"
@@ -266,7 +315,7 @@ def reusable_existing_batches(base_experiment: str, target_tokens: List[str]) ->
     completed_tokens: Set[str] = set()
 
     for experiment_name in discover_candidate_experiments(base_experiment, manifest):
-        tokens = completed_tokens_from_simulation_log(experiment_name)
+        tokens = completed_tokens_from_existing_outputs(experiment_name)
         if not tokens:
             continue
         if not metrics_dir_has_parquet(experiment_name):
@@ -390,9 +439,62 @@ def write_manifest(
     print(f"📝 Wrote batch manifest: {manifest_path}")
 
 
-def run_simulation_batch(batch_idx: int, total_batches: int, batch_tokens: List[str],
-                        experiment_name: str, ckpt_path: str, scenario_builder: Optional[str],
-                        script_dir: Path, batch_filter_name: str) -> bool:
+def hydra_override_value(cmd: List[str], key: str) -> Optional[str]:
+    """Return the value for a Hydra override in the simulation command."""
+    prefix = f"{key}="
+    for arg in cmd:
+        if arg.startswith(prefix):
+            return arg[len(prefix):]
+    return None
+
+
+def log_worker_plan(cmd: List[str], batch_size: int) -> None:
+    """Print the expected scenario-level worker concurrency for this batch."""
+    worker = hydra_override_value(cmd, "worker") or "default"
+    max_workers = hydra_override_value(cmd, "worker.max_workers")
+
+    if worker == "sequential":
+        concurrency = 1
+        detail = "sequential"
+    elif worker == "single_machine_thread_pool":
+        if max_workers in (None, "", "null", "None"):
+            concurrency = os.cpu_count() or 1
+            detail = "all logical CPUs"
+        else:
+            try:
+                concurrency = int(max_workers)
+                detail = f"worker.max_workers={max_workers}"
+            except ValueError:
+                concurrency = None
+                detail = f"worker.max_workers={max_workers}"
+    else:
+        concurrency = None
+        detail = f"worker.max_workers={max_workers}" if max_workers is not None else "configured by Hydra defaults"
+
+    print("🧵 Worker plan:")
+    print(f"   worker: {worker}")
+    print(f"   batch scenarios: {batch_size}")
+    if concurrency is None:
+        print(f"   scenario concurrency: unknown ({detail})")
+    else:
+        print(f"   scenario concurrency: up to {min(concurrency, batch_size)} simultaneous scenario(s) ({detail})")
+
+
+def run_simulation_batch(
+    batch_idx: int,
+    total_batches: int,
+    batch_tokens: List[str],
+    experiment_name: str,
+    ckpt_path: Optional[str],
+    scenario_builder: Optional[str],
+    script_dir: Path,
+    batch_filter_name: str,
+    planner: str,
+    planner_overrides: Optional[List[str]],
+    disable_simulation_log: bool,
+    simulation_verbose: bool,
+    quiet: bool,
+) -> bool:
     """Run simulation for a single batch."""
     print(f"\n{'='*70}")
     print(f"📦 Batch {batch_idx + 1}/{total_batches} ({len(batch_tokens)} scenarios)")
@@ -405,15 +507,29 @@ def run_simulation_batch(batch_idx: int, total_batches: int, batch_tokens: List[
         '+simulation=closed_loop_nonreactive_agents',
         'observation=box_observation',
         'ego_controller=two_stage_controller',
-        'planner=pluto_planner',
-        f'+planner.pluto_planner.planner_ckpt={ckpt_path}',
+        f'planner={planner}',
         f'scenario_filter={batch_filter_name}',
         f'experiment={experiment_name}',
         'worker=sequential',
+        f'verbose={str(simulation_verbose).lower()}',
     ]
+
+    if planner == "pluto_planner" and ckpt_path is not None:
+        cmd.append(f'+planner.pluto_planner.planner_ckpt={ckpt_path}')
+    if disable_simulation_log:
+        cmd.append('callback=no_simulation_log')
+    if quiet:
+        cmd.extend([
+            'logger_level=warning',
+            'enable_simulation_progress_bar=false',
+        ])
+    if planner_overrides:
+        cmd.extend(planner_overrides)
     
     if scenario_builder:
         cmd.append(f'scenario_builder={scenario_builder}')
+
+    log_worker_plan(cmd, len(batch_tokens))
     
     # Run simulation
     try:
@@ -441,8 +557,31 @@ Example:
     )
     
     parser.add_argument('--filter', required=True, help='Scenario filter config name')
-    parser.add_argument('--ckpt', required=True, help='Path to checkpoint file')
+    parser.add_argument('--ckpt', help='Path to checkpoint file; required for pluto_planner')
     parser.add_argument('--experiment', required=True, help='Experiment name')
+    parser.add_argument('--planner', default='pluto_planner', help='Hydra planner config name (default: pluto_planner)')
+    parser.add_argument(
+        '--planner-override',
+        action='append',
+        default=[],
+        help='Additional Hydra override for planner setup; can be repeated',
+    )
+    parser.add_argument(
+        '--disable-simulation-log',
+        action='store_true',
+        help='Disable nuPlan simulation_log_callback and avoid writing .msgpack.xz logs',
+    )
+    parser.add_argument(
+        '--simulation-verbose',
+        choices=['true', 'false'],
+        default='true',
+        help='Set nuPlan verbose flag for simulation execution (default: true)',
+    )
+    parser.add_argument(
+        '--quiet',
+        action='store_true',
+        help='Reduce console/progress logging while keeping metric outputs',
+    )
     parser.add_argument('--batch-size', type=int, default=200, 
                        help='Number of scenarios per batch (default: 200)')
     parser.add_argument('--limit', type=int, help='Total limit on scenarios')
@@ -454,21 +593,36 @@ Example:
     
     args = parser.parse_args()
     
-    # Convert checkpoint to absolute path
-    ckpt_path = Path(args.ckpt)
-    if not ckpt_path.is_absolute():
-        ckpt_path = REPO_ROOT / ckpt_path
-    ckpt_path = ckpt_path.resolve()
-    
-    if not ckpt_path.exists():
-        print(f"❌ Error: Checkpoint not found: {ckpt_path}")
+    ckpt_path: Optional[Path] = None
+    if args.ckpt:
+        if args.planner != "pluto_planner":
+            print("❌ Error: --ckpt is only wired for planner=pluto_planner. Use --planner-override for custom planner checkpoint fields.")
+            sys.exit(1)
+        ckpt_path = Path(args.ckpt)
+        if not ckpt_path.is_absolute():
+            ckpt_path = REPO_ROOT / ckpt_path
+        ckpt_path = ckpt_path.resolve()
+
+        if not ckpt_path.exists():
+            print(f"❌ Error: Checkpoint not found: {ckpt_path}")
+            sys.exit(1)
+    elif args.planner == "pluto_planner":
+        print("❌ Error: --ckpt is required when planner=pluto_planner")
         sys.exit(1)
     
     print(f"\n{'='*70}")
     print(f"🚀 BATCHED SIMULATION RUNNER")
     print(f"{'='*70}")
     print(f"Filter: {args.filter}")
-    print(f"Checkpoint: {ckpt_path}")
+    print(f"Planner: {args.planner}")
+    if ckpt_path is not None:
+        print(f"Checkpoint: {ckpt_path}")
+    if args.disable_simulation_log:
+        print("Simulation logs: disabled (.msgpack.xz will not be written)")
+    if args.quiet:
+        print("Console logging: quiet")
+    if args.planner_override:
+        print(f"Planner overrides: {args.planner_override}")
     print(f"Experiment: {args.experiment}")
     print(f"Batch size: {args.batch_size} scenarios")
     if args.limit:
@@ -565,10 +719,15 @@ Example:
                 total_batches=num_batches,
                 batch_tokens=batch_tokens,
                 experiment_name=batch_experiment_name,
-                ckpt_path=str(ckpt_path),
+                ckpt_path=str(ckpt_path) if ckpt_path is not None else None,
                 scenario_builder=args.scenario_builder,
                 script_dir=REPO_ROOT,
                 batch_filter_name=batch_filter_name,
+                planner=args.planner,
+                planner_overrides=args.planner_override,
+                disable_simulation_log=args.disable_simulation_log,
+                simulation_verbose=args.simulation_verbose == 'true',
+                quiet=args.quiet,
             )
             
             if success:

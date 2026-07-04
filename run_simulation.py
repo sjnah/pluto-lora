@@ -11,11 +11,19 @@ REPO_ROOT = Path(__file__).resolve().parent
 WORKSPACE_ROOT = REPO_ROOT.parent
 
 
+def path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def resolve_exp_root(runtime_root: Path) -> Path:
     explicit = os.environ.get("NUPLAN_EXP_ROOT")
-    candidate = Path(explicit) if explicit else runtime_root / "exp"
+    preserve_explicit = os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1"
+    candidate = Path(explicit) if explicit and preserve_explicit else runtime_root / "exp"
 
-    if os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1" and explicit:
+    if preserve_explicit and explicit:
         return candidate
 
     try:
@@ -25,7 +33,7 @@ def resolve_exp_root(runtime_root: Path) -> Path:
         probe.unlink(missing_ok=True)
         return candidate
     except OSError as error:
-        if explicit:
+        if preserve_explicit and explicit:
             raise RuntimeError(
                 f"Explicit NUPLAN_EXP_ROOT is not writable: {candidate}. "
                 "Fix the mount permissions or choose a writable shared exp root."
@@ -42,7 +50,7 @@ def bootstrap_workspace_paths() -> None:
     nuplan_devkit_root = Path(os.environ.get("NUPLAN_DEVKIT_ROOT", WORKSPACE_ROOT / "nuplan-devkit"))
     if "NUPLAN_RUNTIME_ROOT" in os.environ:
         nuplan_runtime_root = Path(os.environ["NUPLAN_RUNTIME_ROOT"])
-    elif Path("/root/vessl-nuplan").exists():
+    elif path_exists(Path("/root/vessl-nuplan")):
         nuplan_runtime_root = Path("/root/vessl-nuplan")
     else:
         nuplan_runtime_root = nuplan_devkit_root / "nuplan"
@@ -86,9 +94,21 @@ def bootstrap_workspace_paths() -> None:
 
 bootstrap_workspace_paths()
 
+
+def disable_wandb_for_simulation() -> None:
+    """Avoid importing broken/unused wandb through PyTorch Lightning loggers."""
+    if os.environ.get("PLUTO_SIMULATION_ALLOW_WANDB") == "1":
+        return
+
+    os.environ.setdefault("WANDB_DISABLED", "true")
+    sys.modules.setdefault("wandb", None)
+
+
+disable_wandb_for_simulation()
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import hydra
 import pandas as pd
-import pytorch_lightning as pl
 from nuplan.common.utils.s3_utils import is_s3_path
 from nuplan.planning.script.builders.simulation_builder import build_simulations
 from nuplan.planning.script.builders.simulation_callback_builder import (
@@ -111,6 +131,30 @@ set_default_path()
 
 # If set, use the env. variable to overwrite the Hydra config
 CONFIG_PATH = os.getenv("NUPLAN_HYDRA_CONFIG_PATH", "config/simulation")
+
+
+def seed_everything(seed: int) -> None:
+    """Seed common RNGs without importing pytorch_lightning or wandb."""
+    import random
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except Exception as error:
+        logger.debug("Skipping NumPy seeding: %s", error)
+
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except Exception as error:
+        logger.debug("Skipping Torch seeding: %s", error)
 
 
 def print_simulation_results(file=None):
@@ -147,7 +191,7 @@ def run_simulation(
     :param planners: Pre-built planner(s) to run in simulation. Can either be a single planner or list of planners.
     """
     # Fix random seed
-    pl.seed_everything(cfg.seed, workers=True)
+    seed_everything(int(cfg.seed))
 
     profiler_name = "building_simulation"
     common_builder = set_up_common_builder(cfg=cfg, profiler_name=profiler_name)
