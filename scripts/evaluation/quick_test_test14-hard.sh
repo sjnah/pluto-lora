@@ -44,7 +44,7 @@ RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
 RUN_UNIFORM=${RUN_UNIFORM:-false}
 RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
 RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
-RUN_MPOC=${RUN_MPOC:-true}
+RUN_MPOC=${RUN_MPOC:-false}
 
 # Batch size for processing scenarios (to avoid OOM)
 # If set to a positive number, scenarios will be automatically split into batches and processed sequentially.

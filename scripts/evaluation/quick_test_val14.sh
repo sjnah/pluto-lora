@@ -20,6 +20,10 @@ cd "$REPO_ROOT"
 # WARNING: If you get OOM (Out Of Memory) errors, enable batch processing (see BATCH_SIZE below).
 # The simulation framework builds all simulation objects upfront, so large scenario counts can cause OOM.
 SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-2000} # 2000
+FILTER_NAME=${FILTER_NAME:-val14_benchmark}
+EXPERIMENT_SUFFIX=${EXPERIMENT_SUFFIX:-val14_benchmark}
+TEST_LABEL=${TEST_LABEL:-Val14 Benchmark}
+SCENARIO_BUILDER=${SCENARIO_BUILDER:-nuplan_v1_1_val}
 
 # Model selection flags. Set any flag to false/0/no to skip that model.
 RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
@@ -239,9 +243,9 @@ START_TIME=$(date +%s)
 ################################################################################
 echo ""
 echo "=============================================="
-echo "Testing Val14 Benchmark - ${SCENARIOS_PER_STAGE} scenarios"
+echo "Testing ${TEST_LABEL} - ${SCENARIOS_PER_STAGE} scenarios"
 echo "=============================================="
-run_enabled_models val14_benchmark val14_benchmark nuplan_v1_1_val
+run_enabled_models "$FILTER_NAME" "$EXPERIMENT_SUFFIX" "$SCENARIO_BUILDER"
 
 ################################################################################
 # Test 2: Easy scenarios
