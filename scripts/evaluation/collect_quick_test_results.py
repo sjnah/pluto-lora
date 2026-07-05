@@ -75,6 +75,7 @@ class MethodSpec:
 
 TEST_SPECS = {
     "val14_benchmark": TestSpec("val14_benchmark", "Val14 benchmark", "val14_benchmark", "nuplan", 50),
+    "val14_fast": TestSpec("val14_fast", "Val14 fast", "val14_fast", "nuplan", 270),
     "val_easy": TestSpec("val_easy", "Val easy", "llm_guided_val_easy", "nuplan", 50),
     "val_medium": TestSpec("val_medium", "Val medium", "llm_guided_val_medium", "nuplan", 50),
     "val_hard": TestSpec("val_hard", "Val hard", "llm_guided_val_hard", "nuplan", 50),
@@ -109,6 +110,8 @@ TEST_ALIASES = {
     "val": ["val14_benchmark", "val_easy", "val_medium", "val_hard"],
     "val14-benchmark": ["val14_benchmark"],
     "val14_benchmark": ["val14_benchmark"],
+    "val14-fast": ["val14_fast"],
+    "val14_fast": ["val14_fast"],
     "easy": ["val_easy"],
     "medium": ["val_medium"],
     "hard": ["val_hard"],
@@ -647,7 +650,7 @@ def main() -> int:
     parser.add_argument(
         "--tests",
         default="all",
-        help="Comma-separated tests: all, val14, test14-hard, test14-hard-fast, test14-hard-llm-failure, interplan, interplan10, benchmark_scenarios.",
+        help="Comma-separated tests: all, val14, val14-fast, test14-hard, test14-hard-fast, test14-hard-llm-failure, interplan, interplan10, benchmark_scenarios.",
     )
     parser.add_argument(
         "--methods",
