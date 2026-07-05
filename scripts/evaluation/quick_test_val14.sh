@@ -28,6 +28,7 @@ RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
 RUN_UNIFORM=${RUN_UNIFORM:-false}
 RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
 RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
+RUN_MPOC=${RUN_MPOC:-false}
 
 # Batch size for processing scenarios (to avoid OOM)
 # If set to a positive number, scenarios will be automatically split into batches and processed sequentially.
@@ -87,6 +88,7 @@ count_enabled_models() {
     is_enabled "$RUN_UNIFORM" && count=$((count + 1))
     is_enabled "$RUN_RANDOM_BUCKET" && count=$((count + 1))
     is_enabled "$RUN_LLM_CURRICULUM" && count=$((count + 1))
+    is_enabled "$RUN_MPOC" && count=$((count + 1))
     echo "$count"
 }
 
@@ -178,6 +180,7 @@ run_enabled_models() {
     is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-based curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
+    is_enabled "$RUN_MPOC" && run_model_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
 }
 
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
@@ -217,6 +220,7 @@ is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
 is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-based curriculum" "curriculum_lora_llmbased_stage3_high"
+is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
 
 echo "📍 Using checkpoints:"
 is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, no fine-tuning)"
@@ -225,6 +229,7 @@ is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO
 is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT (PLUTO + uniform-principle curriculum LoRA)"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
 is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM curriculum:  $CURRICULUM_CKPT (PLUTO + LLM-based curriculum LoRA)"
+is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT (PLUTO + MPOC curriculum LoRA)"
 echo ""
 
 START_TIME=$(date +%s)

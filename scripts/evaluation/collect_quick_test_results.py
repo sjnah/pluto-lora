@@ -28,12 +28,34 @@ from typing import Any, Iterable
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 WORKSPACE_ROOT = REPO_ROOT.parent
-DEFAULT_NUPLAN_EXP_ROOT = Path(
-    os.environ.get("NUPLAN_EXP_ROOT", str(WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "exp"))
-)
-DEFAULT_EXP_ROOT = DEFAULT_NUPLAN_EXP_ROOT / "exp"
 DEFAULT_RECORDS_DIR = REPO_ROOT / "artifacts" / "records" / "scenario_records"
 DEFAULT_MANIFEST_DIR = REPO_ROOT / "artifacts" / "records" / "batched_runs"
+
+
+def path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def resolve_runtime_root() -> Path:
+    if "NUPLAN_RUNTIME_ROOT" in os.environ:
+        return Path(os.environ["NUPLAN_RUNTIME_ROOT"])
+    if path_exists(Path("/root/vessl-nuplan")):
+        return Path("/root/vessl-nuplan")
+    return WORKSPACE_ROOT / "nuplan-devkit" / "nuplan"
+
+
+def resolve_default_exp_root() -> Path:
+    explicit = os.environ.get("NUPLAN_EXP_ROOT")
+    if explicit and os.environ.get("NUPLAN_PRESERVE_EXPLICIT_PATHS") == "1":
+        return Path(explicit)
+    return resolve_runtime_root() / "exp"
+
+
+DEFAULT_NUPLAN_EXP_ROOT = resolve_default_exp_root()
+DEFAULT_EXP_ROOT = DEFAULT_NUPLAN_EXP_ROOT / "exp"
 
 
 @dataclass(frozen=True)
@@ -57,10 +79,17 @@ TEST_SPECS = {
     "val_medium": TestSpec("val_medium", "Val medium", "llm_guided_val_medium", "nuplan", 50),
     "val_hard": TestSpec("val_hard", "Val hard", "llm_guided_val_hard", "nuplan", 50),
     "test14_hard": TestSpec("test14_hard", "Test14-hard", "test14_hard", "nuplan", 286),
-    "test14_hard_sentinel": TestSpec(
-        "test14_hard_sentinel",
-        "Test14-hard sentinel",
-        "test14_hard_sentinel",
+    "test14_hard_fast": TestSpec(
+        "test14_hard_fast",
+        "Test14-hard fast",
+        "test14_hard_fast",
+        "nuplan",
+        84,
+    ),
+    "test14_hard_llm_failure": TestSpec(
+        "test14_hard_llm_failure",
+        "Test14-hard LLM-failure",
+        "test14_hard_llm_failure",
         "nuplan",
         93,
     ),
@@ -86,9 +115,17 @@ TEST_ALIASES = {
     "test14": ["test14_hard"],
     "test14-hard": ["test14_hard"],
     "test14_hard": ["test14_hard"],
-    "test14-hard-sentinel": ["test14_hard_sentinel"],
-    "test14_hard_sentinel": ["test14_hard_sentinel"],
-    "sentinel": ["test14_hard_sentinel"],
+    "test14-hard-fast": ["test14_hard_fast"],
+    "test14_hard_fast": ["test14_hard_fast"],
+    "fast": ["test14_hard_fast"],
+    "test14-hard-llm-failure": ["test14_hard_llm_failure"],
+    "test14_hard_llm_failure": ["test14_hard_llm_failure"],
+    "llm-failure": ["test14_hard_llm_failure"],
+    "llm_failure": ["test14_hard_llm_failure"],
+    # Backward-compatible aliases for the former diagnostic-set name.
+    "test14-hard-sentinel": ["test14_hard_llm_failure"],
+    "test14_hard_sentinel": ["test14_hard_llm_failure"],
+    "sentinel": ["test14_hard_llm_failure"],
     "interplan": ["interplan10", "interplan_benchmark"],
     "interplan10": ["interplan10"],
     "interplan-benchmark": ["interplan_benchmark"],
@@ -107,6 +144,7 @@ METHOD_SPECS = {
     "curriculum_uniform": MethodSpec("curriculum_uniform", "Curriculum uniform"),
     "curriculum_randombucket": MethodSpec("curriculum_randombucket", "RandomBucket"),
     "curriculum_llmbased": MethodSpec("curriculum_llmbased", "Curriculum LLM-based"),
+    "curriculum_mpoc": MethodSpec("curriculum_mpoc", "Curriculum MPOC"),
 }
 
 DEFAULT_METHODS = [
@@ -116,6 +154,7 @@ DEFAULT_METHODS = [
     "curriculum_uniform",
     "curriculum_randombucket",
     "curriculum_llmbased",
+    "curriculum_mpoc",
 ]
 
 NRCLS_MULTIPLE_METRICS = [
@@ -608,14 +647,14 @@ def main() -> int:
     parser.add_argument(
         "--tests",
         default="all",
-        help="Comma-separated tests: all, val14, test14-hard, test14-hard-sentinel, interplan, interplan10, benchmark_scenarios.",
+        help="Comma-separated tests: all, val14, test14-hard, test14-hard-fast, test14-hard-llm-failure, interplan, interplan10, benchmark_scenarios.",
     )
     parser.add_argument(
         "--methods",
         default="all",
         help=(
             "Comma-separated methods or all. Methods: zeroshot, rulebased, lossbased, "
-            "curriculum_uniform, curriculum_randombucket, curriculum_llmbased"
+            "curriculum_uniform, curriculum_randombucket, curriculum_llmbased, curriculum_mpoc"
         ),
     )
     parser.add_argument("--exp-root", type=Path, default=DEFAULT_EXP_ROOT)

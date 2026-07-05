@@ -40,6 +40,14 @@ from .custom_datamodule import CustomDataModule
 logger = logging.getLogger(__name__)
 
 
+class LocalTensorBoardLogger(TensorBoardLogger):
+    """TensorBoard logger with hparams summary disabled for local protobuf compatibility."""
+
+    def log_hyperparams(self, params, metrics=None) -> None:  # type: ignore[override]
+        if os.environ.get("PLUTO_TENSORBOARD_LOG_HPARAMS") == "1":
+            super().log_hyperparams(params=params, metrics=metrics)
+
+
 def update_config_for_training(cfg: DictConfig) -> None:
     """
     Updates the config based on some conditions.
@@ -297,7 +305,7 @@ def build_custom_trainer(cfg: DictConfig) -> pl.Trainer:
     ]
 
     if cfg.wandb.mode in ["disable", "disabled", "offline"]:
-        training_logger = TensorBoardLogger(
+        training_logger = LocalTensorBoardLogger(
             save_dir=cfg.group,
             name=cfg.experiment,
             log_graph=False,

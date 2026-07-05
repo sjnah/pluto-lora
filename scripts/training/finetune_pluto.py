@@ -19,8 +19,22 @@ Example usage:
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional
+
+
+def disable_wandb_for_local_training() -> None:
+    """Avoid importing broken optional wandb while using TensorBoard logging."""
+    if os.environ.get("PLUTO_TRAINING_ALLOW_WANDB") == "1":
+        return
+
+    os.environ.setdefault("WANDB_DISABLED", "true")
+    sys.modules.setdefault("wandb", None)
+
+
+disable_wandb_for_local_training()
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import hydra
 import pytorch_lightning as pl

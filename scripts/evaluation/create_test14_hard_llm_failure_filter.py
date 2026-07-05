@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Create a failure-balanced Test14-hard sentinel scenario filter.
+"""Create an LLM-failure-focused Test14-hard scenario filter.
 
-The sentinel uses available Test14-hard quick-test parquet metrics from:
+The LLM-failure set uses available Test14-hard quick-test parquet metrics from:
 zero-shot, loss-based, RandomBucket, and LLM-guided PLUTO runs.
 """
 
@@ -22,8 +22,8 @@ PLUTO_ROOT = SCRIPT_DIR.parent.parent
 WORKSPACE_ROOT = PLUTO_ROOT.parent
 
 DEFAULT_EXP_ROOT = WORKSPACE_ROOT / "nuplan-devkit" / "nuplan" / "exp" / "exp"
-DEFAULT_FILTER = PLUTO_ROOT / "config" / "scenario_filter" / "test14-hard-sentinel.yaml"
-DEFAULT_ARTIFACT_DIR = PLUTO_ROOT / "artifacts" / "records" / "test14_hard_sentinel"
+DEFAULT_FILTER = PLUTO_ROOT / "config" / "scenario_filter" / "test14-hard-llm-failure.yaml"
+DEFAULT_ARTIFACT_DIR = PLUTO_ROOT / "artifacts" / "records" / "test14_hard_llm_failure"
 
 METHODS = {
     "zeroshot": "quick_test_zeroshot_test14_hard",
@@ -328,7 +328,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def create_sentinel(
+def create_llm_failure_filter(
     data: AllMetrics,
     failure_bucket_size: int,
     common_success_size: int,
@@ -401,7 +401,7 @@ def main() -> int:
     args = parser.parse_args()
 
     data = load_metrics(args.exp_root)
-    rows, summary = create_sentinel(data, args.failure_bucket_size, args.common_success_size)
+    rows, summary = create_llm_failure_filter(data, args.failure_bucket_size, args.common_success_size)
 
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
     write_filter(args.output_filter, rows)

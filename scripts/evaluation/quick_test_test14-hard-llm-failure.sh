@@ -1,9 +1,9 @@
 #!/bin/bash
 ################################################################################
-# Quick Test: Test14-Hard Sentinel Filter
-# Uses test14-hard-sentinel.yaml scenario filter with nuplan-v1.1_test dataset.
+# Quick Test: Test14-Hard LLM-Failure Filter
+# Uses test14-hard-llm-failure.yaml scenario filter with nuplan-v1.1_test dataset.
 #
-# The current generated sentinel filter contains 93 scenes:
+# The current generated LLM-failure filter contains 93 scenes:
 #   - collision failure: 15
 #   - drivable/off-route failure: 15
 #   - traffic-rule failure: 15
@@ -14,9 +14,9 @@
 #   zero-shot, loss-based, RandomBucket, LLM-guided
 #
 # Usage:
-#   ./quick_test_test14-hard-sentinel.sh
-#   SIMULATION_TYPE=nonreactive ./quick_test_test14-hard-sentinel.sh
-#   RUN_ZERO_SHOT=false RUN_LOSS_BASED=true ./quick_test_test14-hard-sentinel.sh
+#   ./quick_test_test14-hard-llm-failure.sh
+#   SIMULATION_TYPE=nonreactive ./quick_test_test14-hard-llm-failure.sh
+#   RUN_ZERO_SHOT=false RUN_LOSS_BASED=true ./quick_test_test14-hard-llm-failure.sh
 ################################################################################
 
 set -e
@@ -28,20 +28,21 @@ NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
 
-FILTER_NAME="test14-hard-sentinel"
-EXPERIMENT_SUFFIX="test14_hard_sentinel"
+FILTER_NAME="test14-hard-llm-failure"
+EXPERIMENT_SUFFIX="test14_hard_llm_failure"
 SCENARIO_BUILDER="nuplan_v1_1_test"
 
 # By default, count the generated filter tokens at runtime.
 SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-auto}
 
-# Model selection flags. Sentinel defaults to the four methods used to build it.
-RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true} #
+# Model selection flags. LLM-failure defaults to the four methods used to build it.
+RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false} #
 RUN_RULE_BASED=${RUN_RULE_BASED:-false}
-RUN_LOSS_BASED=${RUN_LOSS_BASED:-true} #
+RUN_LOSS_BASED=${RUN_LOSS_BASED:-false} #
 RUN_UNIFORM=${RUN_UNIFORM:-false}
-RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-true} #
-RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-true} #
+RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false} #
+RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false} #
+RUN_MPOC=${RUN_MPOC:-false}
 
 # Batch size is only used by the nonreactive path.
 BATCH_SIZE=${BATCH_SIZE:-50}
@@ -120,6 +121,7 @@ count_enabled_models() {
     is_enabled "$RUN_UNIFORM" && count=$((count + 1))
     is_enabled "$RUN_RANDOM_BUCKET" && count=$((count + 1))
     is_enabled "$RUN_LLM_CURRICULUM" && count=$((count + 1))
+    is_enabled "$RUN_MPOC" && count=$((count + 1))
     echo "$count"
 }
 
@@ -187,6 +189,7 @@ run_enabled_models() {
     is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-guided curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT"
+    is_enabled "$RUN_MPOC" && run_model_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT"
 }
 
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
@@ -197,8 +200,8 @@ SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"
 mkdir -p "$SCENARIO_RECORDS_DIR"
 
 if [ ! -f "${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml" ]; then
-    echo "Error: sentinel scenario filter not found: ${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml"
-    echo "Generate it with: python scripts/evaluation/create_test14_hard_sentinel_filter.py"
+    echo "Error: LLM-failure scenario filter not found: ${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml"
+    echo "Generate it with: python scripts/evaluation/create_test14_hard_llm_failure_filter.py"
     exit 1
 fi
 
@@ -233,7 +236,7 @@ fi
 TOTAL_SCENARIOS=$((SCENARIOS_PER_STAGE * ENABLED_MODEL_COUNT))
 
 echo "=============================================="
-echo "Quick Test (Test14-Hard Sentinel): ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per method)"
+echo "Quick Test (Test14-Hard LLM-Failure): ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per method)"
 echo "Using ${FILTER_NAME}.yaml filter with nuplan-v1.1_test dataset"
 echo "Simulation type: ${SIMULATION_TYPE}"
 echo "Simulation verbose: ${SIMULATION_VERBOSE}"
@@ -254,6 +257,7 @@ is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
 is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "curriculum_lora_llmbased_stage3_high"
+is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
 
 echo "Using checkpoints:"
 is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT"
@@ -262,6 +266,7 @@ is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT"
 is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT"
 is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT"
+is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT"
 echo ""
 echo "Using scenario filter: ${FILTER_NAME}"
 echo "Using scenario builder: ${SCENARIO_BUILDER}"
@@ -271,7 +276,7 @@ START_TIME=$(date +%s)
 
 echo ""
 echo "=============================================="
-echo "Testing Test14-Hard Sentinel - ${SCENARIOS_PER_STAGE} scenarios"
+echo "Testing Test14-Hard LLM-Failure - ${SCENARIOS_PER_STAGE} scenarios"
 echo "=============================================="
 run_enabled_models
 
@@ -282,7 +287,7 @@ SECONDS=$((DURATION % 60))
 
 echo ""
 echo "=============================================="
-echo "Quick test (test14-hard sentinel) complete."
+echo "Quick test (test14-hard LLM-failure) complete."
 echo "=============================================="
 echo "Time taken: ${MINUTES}m ${SECONDS}s"
 echo ""
@@ -290,12 +295,12 @@ echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_*_${EXPERIMENT_SUFFIX}"
 echo ""
 echo "Collecting result summary..."
 python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
-    --tests test14-hard-sentinel \
-    --methods zeroshot,lossbased,curriculum_randombucket,curriculum_llmbased \
-    --detail || echo "Could not collect sentinel summary"
+    --tests test14-hard-llm-failure \
+    --methods zeroshot,lossbased,curriculum_randombucket,curriculum_llmbased,curriculum_mpoc \
+    --detail || echo "Could not collect LLM-failure summary"
 
 echo ""
 echo "Next steps:"
 echo "  1. Check NR-CLS and per-metric columns in the result summary."
-echo "  2. Compare sentinel behavior against full Test14-hard."
+echo "  2. Compare LLM-failure behavior against full Test14-hard."
 echo "  3. Inspect scenario records in ${SCENARIO_RECORDS_DIR}."

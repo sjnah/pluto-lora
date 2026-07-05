@@ -1,0 +1,114 @@
+_target_: nuplan.planning.scenario_builder.scenario_filter.ScenarioFilter
+_convert_: all
+scenario_types:
+  - behind_long_vehicle
+  - changing_lane
+  - following_lane_with_lead
+  - high_lateral_acceleration
+  - high_magnitude_speed
+  - low_magnitude_speed
+  - near_multiple_vehicles
+  - starting_left_turn
+  - starting_right_turn
+  - starting_straight_traffic_light_intersection_traversal
+  - stationary_in_traffic
+  - stopping_with_lead
+  - traversing_pickup_dropoff
+  - waiting_for_pedestrian_to_cross
+scenario_tokens:
+  - "fa6b31fc16f251c9"
+  - "6db7f9f43c655149"
+  - "014ad27ed9da5b86"
+  - "4836b2dd09895237"
+  - "990551bed2555351"
+  - "a10ebe68a57c5dda"
+  - "2754fbd9c2445dce"
+  - "a61d56930e9b5f36"
+  - "b87bd5af8ff75bc5"
+  - "d8a23f0cb78e5938"
+  - "2e56997063c057a0"
+  - "217131c79adf588d"
+  - "5a79cd2161c754c9"
+  - "d13124fa683654b4"
+  - "93c583b46398560e"
+  - "442523fcce0950e8"
+  - "938b0223319957ef"
+  - "c0c385cbdd47536b"
+  - "295432d96052578e"
+  - "9a92b5bf8d735034"
+  - "3e673b48bbf15727"
+  - "35c3787707ce5deb"
+  - "75025613e3935595"
+  - "75d56d4c7b6f5013"
+  - "a9407c1ea38959d5"
+  - "56cdd36746c85788"
+  - "9c7f7922e3225dec"
+  - "edc971e9dc7f5165"
+  - "0a2be0a8f9c75775"
+  - "88ac8fc4c8b25a22"
+  - "3454842a96ef511e"
+  - "69e91c91e4e65848"
+  - "ffbae8b71907545c"
+  - "b1cef3eeb5445447"
+  - "33187fb09d0e52f8"
+  - "be2029b5dc2c5b78"
+  - "4fde9018255c5f96"
+  - "56022a77c9fd5a1e"
+  - "1796b59d5f16581f"
+  - "0586b3fb1ffb5fba"
+  - "e0834d617d8d5453"
+  - "71544041acf754bc"
+  - "0cd6cff135c25fa9"
+  - "8e355342a0115145"
+  - "7c64bfeda7ca5f22"
+  - "044a3924d9e15bc1"
+  - "577c248204055c02"
+  - "70ee68fbecd354b0"
+  - "179a1bf034c650ce"
+  - "230a1a270a105821"
+  - "ae0ace575c775f82"
+  - "00af7480d144507f"
+  - "643114dca0825b3f"
+  - "de3cc0dd7ac45a65"
+  - "e9faae87fb83540d"
+  - "80a05e5b3037536a"
+  - "1c3d3a5bb86c5d97"
+  - "20f2e6f4bf3f5e80"
+  - "521a9f9977d351da"
+  - "9fd5ec2b453d556e"
+  - "2703f12098405703"
+  - "9b039177b43b5260"
+  - "33b448fab23a5d03"
+  - "6639a4f7873a56dc"
+  - "00de3f6da9205a0c"
+  - "1e3f5ab092335059"
+  - "5cb7891d29545bd4"
+  - "4570000dd1685c5d"
+  - "3150573de84e5ea9"
+  - "5bc4f584c6325e50"
+  - "b327b4d0432a51a1"
+  - "b56eda3b0d1c5f67"
+  - "3cd758f0d51a55e5"
+  - "f352e2c4378b5ea1"
+  - "698b38a35cc95956"
+  - "bcf52e9ad12c5ce4"
+  - "65d4717562ea5d95"
+  - "98c66f5373705fd7"
+  - "1e502e7fc8745e0a"
+  - "7dde022f98be574c"
+  - "16a890626fa9570d"
+  - "c2b222d1f0715c00"
+  - "54da00bc66c7575d"
+  - "9e7b8fa4248d55de"
+log_names: null
+map_names: null
+num_scenarios_per_type: null
+limit_total_scenarios: null
+timestamp_threshold_s: 15
+ego_displacement_minimum_m: null
+ego_start_speed_threshold: null
+ego_stop_speed_threshold: null
+speed_noise_tolerance: null
+expand_scenarios: null
+remove_invalid_goals: true
+shuffle: false

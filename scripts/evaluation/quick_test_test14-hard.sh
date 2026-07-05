@@ -23,6 +23,12 @@ NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
 
+FILTER_NAME=${FILTER_NAME:-test14-hard}
+EXPERIMENT_SUFFIX=${EXPERIMENT_SUFFIX:-test14_hard}
+TEST_LABEL=${TEST_LABEL:-Test14-Hard}
+SCENARIO_BUILDER=${SCENARIO_BUILDER:-nuplan_v1_1_test}
+COLLECT_TEST=${COLLECT_TEST:-test14-hard}
+
 # Configuration: Number of scenarios to evaluate per stage
 # This ensures all enabled methods use the same scenarios
 # Note: Sequential worker is used to minimize memory usage. 
@@ -32,12 +38,13 @@ cd "$REPO_ROOT"
 SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-286} # 286
 
 # Model selection flags. Set any flag to false/0/no to skip that model.
-RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true}
+RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
 RUN_RULE_BASED=${RUN_RULE_BASED:-false}
 RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
 RUN_UNIFORM=${RUN_UNIFORM:-false}
 RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
 RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
+RUN_MPOC=${RUN_MPOC:-true}
 
 # Batch size for processing scenarios (to avoid OOM)
 # If set to a positive number, scenarios will be automatically split into batches and processed sequentially.
@@ -127,6 +134,7 @@ count_enabled_models() {
     is_enabled "$RUN_UNIFORM" && count=$((count + 1))
     is_enabled "$RUN_RANDOM_BUCKET" && count=$((count + 1))
     is_enabled "$RUN_LLM_CURRICULUM" && count=$((count + 1))
+    is_enabled "$RUN_MPOC" && count=$((count + 1))
     echo "$count"
 }
 
@@ -201,6 +209,7 @@ run_enabled_models() {
     is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-based curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
+    is_enabled "$RUN_MPOC" && run_model_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
 }
 
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
@@ -211,6 +220,33 @@ source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"
 mkdir -p "$SCENARIO_RECORDS_DIR"
 
+if [ ! -f "${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml" ]; then
+    echo "Error: scenario filter not found: ${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml"
+    exit 1
+fi
+
+if [ "$SCENARIOS_PER_STAGE" = "auto" ]; then
+    SCENARIOS_PER_STAGE=$(python - "$REPO_ROOT/config/scenario_filter/${FILTER_NAME}.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+in_tokens = False
+count = 0
+for line in path.read_text(encoding="utf-8").splitlines():
+    stripped = line.strip()
+    if stripped == "scenario_tokens:":
+        in_tokens = True
+        continue
+    if in_tokens and stripped and not stripped.startswith("-"):
+        break
+    if in_tokens and stripped.startswith("-"):
+        count += 1
+print(count)
+PY
+)
+fi
+
 ENABLED_MODEL_COUNT=$(count_enabled_models)
 if [ "$ENABLED_MODEL_COUNT" -eq 0 ]; then
     echo "Error: All model flags are disabled. Enable at least one model."
@@ -220,8 +256,8 @@ fi
 TOTAL_SCENARIOS=$((SCENARIOS_PER_STAGE * ENABLED_MODEL_COUNT))
 
 echo "=============================================="
-echo "Quick Test (Test14-Hard): ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per method)"
-echo "Using test14-hard.yaml filter with nuplan-v1.1_test dataset"
+echo "Quick Test (${TEST_LABEL}): ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per method)"
+echo "Using ${FILTER_NAME}.yaml filter with ${SCENARIO_BUILDER} dataset"
 echo "Simulation type: ${SIMULATION_TYPE} (other vehicles ${SIMULATION_TYPE} to ego)"
 echo "Simulation verbose: ${SIMULATION_VERBOSE}"
 echo "Progress bar: ${ENABLE_PROGRESS_BAR}"
@@ -243,6 +279,7 @@ is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
 is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-based curriculum" "curriculum_lora_llmbased_stage3_high"
+is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
 
 echo "📍 Using checkpoints:"
 is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, no fine-tuning)"
@@ -251,9 +288,10 @@ is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO
 is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT (PLUTO + uniform-principle curriculum LoRA)"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
 is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM curriculum:  $CURRICULUM_CKPT (PLUTO + LLM-based curriculum LoRA)"
+is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT (PLUTO + MPOC curriculum LoRA)"
 echo ""
-echo "📍 Using scenario filter: test14-hard"
-echo "📍 Using scenario builder: nuplan_v1_1_test (nuplan-v1.1_test dataset)"
+echo "📍 Using scenario filter: ${FILTER_NAME}"
+echo "📍 Using scenario builder: ${SCENARIO_BUILDER}"
 echo ""
 
 START_TIME=$(date +%s)
@@ -263,9 +301,9 @@ START_TIME=$(date +%s)
 ################################################################################
 echo ""
 echo "=============================================="
-echo "Testing Test14-Hard - ${SCENARIOS_PER_STAGE} scenarios"
+echo "Testing ${TEST_LABEL} - ${SCENARIOS_PER_STAGE} scenarios"
 echo "=============================================="
-run_enabled_models test14-hard test14_hard nuplan_v1_1_test
+run_enabled_models "$FILTER_NAME" "$EXPERIMENT_SUFFIX" "$SCENARIO_BUILDER"
 
 ################################################################################
 # Summary and Analysis
@@ -278,14 +316,17 @@ SECONDS=$((DURATION % 60))
 
 echo ""
 echo "=============================================="
-echo "✅ Quick test (test14-hard) complete!"
+echo "✅ Quick test (${FILTER_NAME}) complete!"
 echo "=============================================="
 echo "Time taken: ${MINUTES}m ${SECONDS}s"
 echo ""
-echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_*_test14_hard"
+echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_*_${EXPERIMENT_SUFFIX}"
 echo ""
-echo "Analyzing results..."
-python ${REPO_ROOT}/scripts/analysis/analyze_quick_test.py
+echo "Collecting result summary..."
+python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
+    --tests "$COLLECT_TEST" \
+    --methods zeroshot,lossbased,curriculum_randombucket,curriculum_llmbased,curriculum_mpoc \
+    --detail || echo "Could not collect ${FILTER_NAME} summary"
 
 echo ""
 echo "=============================================="
