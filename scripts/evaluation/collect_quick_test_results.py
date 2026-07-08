@@ -6,7 +6,7 @@ Examples:
   python scripts/evaluation/collect_quick_test_results.py --tests val14
   python scripts/evaluation/collect_quick_test_results.py --tests test14-hard,interplan10
   python scripts/evaluation/collect_quick_test_results.py --tests val14 --methods zeroshot,rulebased,lossbased
-  python scripts/evaluation/collect_quick_test_results.py --tests val14 --methods curriculum_randombucket
+  python scripts/evaluation/collect_quick_test_results.py --tests val14 --methods curriculum_llm_guided_v2
   python scripts/evaluation/collect_quick_test_results.py --tests val14 --detail
   python scripts/evaluation/collect_quick_test_results.py --tests all --format csv --output artifacts/records/quick_test_summary.csv
 """
@@ -146,7 +146,8 @@ METHOD_SPECS = {
     "lossbased": MethodSpec("lossbased", "Loss-based"),
     "curriculum_uniform": MethodSpec("curriculum_uniform", "Curriculum uniform"),
     "curriculum_randombucket": MethodSpec("curriculum_randombucket", "RandomBucket"),
-    "curriculum_llmbased": MethodSpec("curriculum_llmbased", "Curriculum LLM-based"),
+    "curriculum_llm_guided_v2": MethodSpec("curriculum_llm_guided_v2", "Curriculum LLM-guided v2"),
+    "curriculum_llmbased": MethodSpec("curriculum_llmbased", "Curriculum LLM-based (legacy)"),
     "curriculum_mpoc": MethodSpec("curriculum_mpoc", "Curriculum MPOC"),
 }
 
@@ -156,6 +157,7 @@ DEFAULT_METHODS = [
     "lossbased",
     "curriculum_uniform",
     "curriculum_randombucket",
+    "curriculum_llm_guided_v2",
     "curriculum_llmbased",
     "curriculum_mpoc",
 ]
@@ -190,6 +192,41 @@ def parse_csv_arg(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def llm_guided_label(method_key: str) -> str:
+    prefix = "curriculum_llm_guided_"
+    version = method_key[len(prefix):] if method_key.startswith(prefix) else method_key
+    return f"Curriculum LLM-guided {version}"
+
+
+def uniform_label(method_key: str) -> str:
+    prefix = "curriculum_uniform_"
+    version = method_key[len(prefix):] if method_key.startswith(prefix) else method_key
+    return f"Uniform FT {version}"
+
+
+def is_llm_guided_version_method(method_key: str) -> bool:
+    return re.fullmatch(r"curriculum_llm_guided_v[0-9][A-Za-z0-9._-]*", method_key) is not None
+
+
+def is_uniform_version_method(method_key: str) -> bool:
+    return re.fullmatch(r"curriculum_uniform_v[0-9][A-Za-z0-9._-]*", method_key) is not None
+
+
+def is_auto_discovered_version_method(method_key: str) -> bool:
+    return is_llm_guided_version_method(method_key) or is_uniform_version_method(method_key)
+
+
+def method_spec_for_key(method_key: str) -> MethodSpec | None:
+    spec = METHOD_SPECS.get(method_key)
+    if spec is not None:
+        return spec
+    if is_llm_guided_version_method(method_key):
+        return MethodSpec(method_key, llm_guided_label(method_key))
+    if is_uniform_version_method(method_key):
+        return MethodSpec(method_key, uniform_label(method_key))
+    return None
+
+
 def expand_tests(value: str) -> list[TestSpec]:
     keys: list[str] = []
     for token in parse_csv_arg(value):
@@ -206,18 +243,64 @@ def expand_tests(value: str) -> list[TestSpec]:
     return [TEST_SPECS[key] for key in deduped]
 
 
-def expand_methods(value: str) -> list[MethodSpec]:
+def add_unique_method_key(keys: list[str], method_key: str) -> None:
+    if method_key not in keys:
+        keys.append(method_key)
+
+
+def extract_method_from_experiment_name(test: TestSpec, name: str) -> str | None:
+    if test.kind == "interplan":
+        prefix = "quick_test_interplan_"
+    else:
+        prefix = "quick_test_"
+    suffix = f"_{test.suffix}"
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return None
+    method_key = name[len(prefix) : -len(suffix)]
+    return method_key or None
+
+
+def discover_versioned_methods(
+    tests: Iterable[TestSpec],
+    exp_root: Path,
+    records_dir: Path,
+    manifest_dir: Path,
+) -> list[str]:
+    discovered: list[str] = []
+    search_roots = [exp_root, records_dir, manifest_dir]
+    for test in tests:
+        prefix = "quick_test_interplan_" if test.kind == "interplan" else "quick_test_"
+        for root in search_roots:
+            if not root.exists():
+                continue
+            for path in root.glob(f"{prefix}*_{test.suffix}*"):
+                name = path.stem if path.is_file() else path.name
+                method_key = extract_method_from_experiment_name(test, name)
+                if method_key and is_auto_discovered_version_method(method_key):
+                    add_unique_method_key(discovered, method_key)
+    return sorted(discovered)
+
+
+def expand_methods(
+    value: str,
+    tests: Iterable[TestSpec],
+    exp_root: Path,
+    records_dir: Path,
+    manifest_dir: Path,
+) -> list[MethodSpec]:
     if value == "all":
-        keys = DEFAULT_METHODS
+        keys = list(DEFAULT_METHODS)
+        for method_key in discover_versioned_methods(tests, exp_root, records_dir, manifest_dir):
+            add_unique_method_key(keys, method_key)
     else:
         keys = []
         for token in parse_csv_arg(value):
             normalized = token.lower().replace("-", "_")
-            if normalized not in METHOD_SPECS:
+            if method_spec_for_key(normalized) is None:
                 valid = ", ".join(sorted(METHOD_SPECS))
                 raise SystemExit(f"Unknown method '{token}'. Valid values: {valid}")
             keys.append(normalized)
-    return [METHOD_SPECS[key] for key in keys]
+    return [spec for key in keys if (spec := method_spec_for_key(key)) is not None]
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -657,7 +740,10 @@ def main() -> int:
         default="all",
         help=(
             "Comma-separated methods or all. Methods: zeroshot, rulebased, lossbased, "
-            "curriculum_uniform, curriculum_randombucket, curriculum_llmbased, curriculum_mpoc"
+            "curriculum_uniform, curriculum_randombucket, curriculum_llm_guided_v2, "
+            "curriculum_uniform_v*, curriculum_llm_guided_v*, curriculum_llmbased, "
+            "curriculum_mpoc. Versioned Uniform/LLM-guided methods present in result "
+            "directories are auto-discovered for all."
         ),
     )
     parser.add_argument("--exp-root", type=Path, default=DEFAULT_EXP_ROOT)
@@ -665,6 +751,7 @@ def main() -> int:
     parser.add_argument("--manifest-dir", type=Path, default=DEFAULT_MANIFEST_DIR)
     parser.add_argument("--format", choices=["table", "json", "csv"], default="table")
     parser.add_argument("--output", type=Path, help="Optional output path for json/csv/table text.")
+    parser.add_argument("--overwrite", action="store_true", help="Allow --output to replace an existing file.")
     parser.add_argument(
         "--detail",
         action="store_true",
@@ -675,7 +762,12 @@ def main() -> int:
     args = parser.parse_args()
 
     tests = expand_tests(args.tests)
-    methods = expand_methods(args.methods)
+    methods = expand_methods(args.methods, tests, args.exp_root, args.records_dir, args.manifest_dir)
+    if args.output and args.output.exists() and not args.overwrite:
+        raise SystemExit(
+            f"Refusing to overwrite existing output: {args.output}\n"
+            "Use a versioned --output path or pass --overwrite explicitly."
+        )
 
     rows: list[dict[str, Any]] = []
     for test in tests:

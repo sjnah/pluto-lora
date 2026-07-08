@@ -26,8 +26,8 @@ LORA_ALPHA=16.0
 LORA_DROPOUT=0.05
 LORA_LR=2e-4
 HEAD_LR1=0.0
-HEAD_LR2=3e-6
-HEAD_LR3=1e-5
+HEAD_LR2=1e-5 # 3e-6
+HEAD_LR3=3e-6 # 1e-5
 
 LR=1e-5
 WEIGHT_DECAY=0.05
@@ -240,5 +240,5 @@ echo "=============================================="
 echo "Done: MPOC curriculum experiment complete"
 echo "=============================================="
 echo "Curriculum checkpoint: $CURRICULUM_CKPT"
-echo "Use run_lora_experiment_llmbased.sh for the LLM-based curriculum experiment."
+echo "Use run_lora_experiment_llmbased.sh for the LLM-guided curriculum experiment."
 echo "Use run_lora_experiment_lossrank.sh for the frozen-loss curriculum baseline."

@@ -577,9 +577,9 @@ def main():
         # Note: zero-shot may be commented out in quick_test.sh.
         # Include current explicit curriculum slugs plus legacy slugs for old runs.
         if 'InterPlan' in group_name:
-            methods = ['zeroshot', 'rulebased', 'lossbased', 'curriculum_uniform', 'curriculum_randombucket', 'curriculum_llmbased', 'curriculum_mpoc', 'uniform', 'curriculum']
+            methods = ['zeroshot', 'rulebased', 'lossbased', 'curriculum_uniform', 'curriculum_randombucket', 'curriculum_llm_guided_v2', 'curriculum_llmbased', 'curriculum_mpoc', 'uniform', 'curriculum']
         else:
-            methods = ['zeroshot', 'rulebased', 'lossbased', 'curriculum_uniform', 'curriculum_randombucket', 'curriculum_llmbased', 'curriculum_mpoc']
+            methods = ['zeroshot', 'rulebased', 'lossbased', 'curriculum_uniform', 'curriculum_randombucket', 'curriculum_llm_guided_v2', 'curriculum_llmbased', 'curriculum_mpoc']
 
         for method in methods:
             # Handle both regular and interplan experiments

@@ -21,6 +21,6 @@ export RUN_LOSS_BASED="${RUN_LOSS_BASED:-false}"
 export RUN_UNIFORM="${RUN_UNIFORM:-false}"
 export RUN_RANDOM_BUCKET="${RUN_RANDOM_BUCKET:-false}"
 export RUN_LLM_CURRICULUM="${RUN_LLM_CURRICULUM:-true}"
-export RUN_MPOC="${RUN_MPOC:-false}"
+export RUN_MPOC="${RUN_MPOC:-true}"
 
 exec "${SCRIPT_DIR}/quick_test_test14-hard.sh"

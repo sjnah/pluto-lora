@@ -206,12 +206,13 @@ def distributed_curriculum_sampler_init(
     total_weight = sum(split_weights)
     normalized_weights = [w / total_weight for w in split_weights]
     
-    # Create weights for each scenario
+    # Create weights for each scenario. Divide by split size so split_weights
+    # represent split-level sampling probabilities, not per-sample weights.
     all_weights = []
     for dataset, weight in zip(scenario_datasets, normalized_weights):
-        # Each scenario in this split gets the same weight
         num_scenarios = len(dataset._scenarios)
-        all_weights.extend([weight] * num_scenarios)
+        assert num_scenarios > 0, "Curriculum split dataset must not be empty"
+        all_weights.extend([weight / num_scenarios] * num_scenarios)
     
     # Create weighted sampler
     weighted_sampler = WeightedRandomSampler(

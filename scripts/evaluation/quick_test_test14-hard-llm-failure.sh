@@ -44,6 +44,10 @@ RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false} #
 RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false} #
 RUN_MPOC=${RUN_MPOC:-false}
 
+LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v2}
+LLM_CURRICULUM_SLUG=${LLM_CURRICULUM_SLUG:-curriculum_llm_guided_${LLM_CURRICULUM_VERSION}}
+LLM_CURRICULUM_EXP=${LLM_CURRICULUM_EXP:-curriculum_lora_llm_guided_${LLM_CURRICULUM_VERSION}_stage3_high}
+
 # Batch size is only used by the nonreactive path.
 BATCH_SIZE=${BATCH_SIZE:-50}
 
@@ -188,7 +192,7 @@ run_enabled_models() {
     is_enabled "$RUN_LOSS_BASED" && run_model_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT"
     is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT"
-    is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-guided curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT"
+    is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-guided curriculum (${LLM_CURRICULUM_VERSION})" "$LLM_CURRICULUM_SLUG" "$CURRICULUM_CKPT"
     is_enabled "$RUN_MPOC" && run_model_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT"
 }
 
@@ -256,7 +260,7 @@ is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based
 is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "curriculum_lora_lossrank_stage3_high"
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
-is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "curriculum_lora_llmbased_stage3_high"
+is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "$LLM_CURRICULUM_EXP"
 is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
 
 echo "Using checkpoints:"
@@ -265,7 +269,7 @@ is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT"
 is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT"
 is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT"
-is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT"
+is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT (${LLM_CURRICULUM_VERSION}, slug=${LLM_CURRICULUM_SLUG})"
 is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT"
 echo ""
 echo "Using scenario filter: ${FILTER_NAME}"
@@ -296,7 +300,7 @@ echo ""
 echo "Collecting result summary..."
 python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
     --tests test14-hard-llm-failure \
-    --methods zeroshot,lossbased,curriculum_randombucket,curriculum_llmbased,curriculum_mpoc \
+    --methods zeroshot,lossbased,curriculum_randombucket,"$LLM_CURRICULUM_SLUG",curriculum_mpoc \
     --detail || echo "Could not collect LLM-failure summary"
 
 echo ""

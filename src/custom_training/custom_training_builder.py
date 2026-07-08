@@ -131,6 +131,7 @@ def build_lightning_datamodule(
     # Check if this is a curriculum learning stage with multiple splits
     curriculum_splits = cfg.get("curriculum", {}).get("splits", None)
     curriculum_weights = cfg.get("curriculum", {}).get("sampling_weights", None)
+    all_scenarios_list = None
     
     if curriculum_splits is not None and curriculum_weights is not None:
         # Curriculum learning: load multiple splits and combine with weights
@@ -232,7 +233,7 @@ def build_lightning_datamodule(
         scenario_type_sampling_weights=cfg.scenario_type_weights.scenario_type_sampling_weights,
         curriculum_splits=curriculum_splits,
         curriculum_weights=curriculum_weights,
-        all_scenarios_list=all_scenarios_list if curriculum_splits is not None else None,
+        all_scenarios_list=all_scenarios_list,
         **cfg.data_loader.datamodule,
     )
 

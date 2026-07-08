@@ -62,50 +62,52 @@ class WarmupCosLR(_LRScheduler):
             lr = self.lr / self.warmup_epochs
         return lr
 
+    def _get_group_min_lr(self, base_lr):
+        if self.lr == 0:
+            return 0.0
+        return self.min_lr * (base_lr / self.lr)
+
+    def _get_scheduled_lr(self, base_lr, current_step):
+        min_lr = self._get_group_min_lr(base_lr)
+
+        if self.warmup_steps is not None:
+            if current_step <= self.warmup_steps:
+                return base_lr * current_step / self.warmup_steps
+
+            if self.total_steps is None:
+                remaining_steps = max(1, self.epochs * 1000 - self.warmup_steps)
+            else:
+                remaining_steps = max(1, self.total_steps - self.warmup_steps)
+
+            current_step_in_cosine = min(
+                current_step - self.warmup_steps,
+                remaining_steps,
+            )
+            return min_lr + 0.5 * (base_lr - min_lr) * (
+                1
+                + math.cos(
+                    math.pi
+                    * current_step_in_cosine
+                    / remaining_steps
+                )
+            )
+
+        if current_step <= self.warmup_epochs:
+            return base_lr * current_step / self.warmup_epochs
+
+        return min_lr + 0.5 * (base_lr - min_lr) * (
+            1
+            + math.cos(
+                math.pi
+                * (current_step - self.warmup_epochs)
+                / (self.epochs - self.warmup_epochs)
+            )
+        )
+
     def get_lr(self):
         # PyTorch Lightning scheduler: last_epoch is step count (0-indexed)
         current_step = self.last_epoch + 1  # Convert to 1-indexed
-        
-        if self.warmup_steps is not None:
-            # Step-based warmup
-            if current_step <= self.warmup_steps:
-                lr = self.lr * current_step / self.warmup_steps
-            else:
-                # Need total_steps for cosine annealing
-                if self.total_steps is None:
-                    # Fallback: use a large number (will be corrected when total_steps is known)
-                    # This is a temporary workaround
-                    remaining_steps = max(1, self.epochs * 1000 - self.warmup_steps)  # Estimate
-                else:
-                    remaining_steps = self.total_steps - self.warmup_steps
-                
-                current_step_in_cosine = current_step - self.warmup_steps
-                lr = self.min_lr + 0.5 * (self.lr - self.min_lr) * (
-                    1
-                    + math.cos(
-                        math.pi
-                        * current_step_in_cosine
-                        / remaining_steps
-                    )
-                )
-        else:
-            # Epoch-based warmup (original behavior)
-            # Note: In PyTorch Lightning, last_epoch is step count, not epoch count
-            # This requires steps_per_epoch to convert, but for backward compatibility
-            # we'll assume last_epoch represents epochs (old behavior)
-            if current_step <= self.warmup_epochs:
-                lr = self.lr * current_step / self.warmup_epochs
-            else:
-                lr = self.min_lr + 0.5 * (self.lr - self.min_lr) * (
-                    1
-                    + math.cos(
-                        math.pi
-                        * (current_step - self.warmup_epochs)
-                        / (self.epochs - self.warmup_epochs)
-                    )
-                )
-        
-        if "lr_scale" in self.optimizer.param_groups[0]:
-            return [lr * group["lr_scale"] for group in self.optimizer.param_groups]
-
-        return [lr for _ in self.optimizer.param_groups]
+        return [
+            self._get_scheduled_lr(base_lr, current_step)
+            for base_lr in self.base_lrs
+        ]

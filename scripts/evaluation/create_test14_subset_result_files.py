@@ -25,6 +25,7 @@ METHOD_EXPERIMENT_PREFIXES = {
     "lossbased": "quick_test_lossbased",
     "curriculum_uniform": "quick_test_curriculum_uniform",
     "curriculum_randombucket": "quick_test_curriculum_randombucket",
+    "curriculum_llm_guided_v2": "quick_test_curriculum_llm_guided_v2",
     "curriculum_llmbased": "quick_test_curriculum_llmbased",
     "curriculum_mpoc": "quick_test_curriculum_mpoc",
 }
@@ -32,6 +33,7 @@ DEFAULT_METHODS = [
     "zeroshot",
     "lossbased",
     "curriculum_randombucket",
+    "curriculum_llm_guided_v2",
     "curriculum_llmbased",
 ]
 

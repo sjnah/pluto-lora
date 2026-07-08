@@ -67,7 +67,7 @@ SCENARIO_FILTER_STAGE1="rulebased_train_easy"
 SCENARIO_FILTER_STAGE2="rulebased_train_medium"
 SCENARIO_FILTER_STAGE3="rulebased_train_hard"
 
-# Experiment Names (suffixed with _rulebased to distinguish from LLM-based version)
+# Experiment Names (suffixed with _rulebased to distinguish from LLM-guided version)
 UNIFORM_EXP="uniform_lora_finetune_rulebased"
 CURRICULUM_BASE_EXP="curriculum_lora_rulebased"
 
@@ -496,5 +496,5 @@ echo "  Weight decay: $WEIGHT_DECAY, Warmup steps: $WARMUP_STEPS"
 echo "  Scenario filters: Rule-based score percentile splits"
 echo ""
 echo "Next: Analyze results and compare uniform vs curriculum training!"
-echo "      Compare with LLM-based score results from run_lora_experiment.sh"
+echo "      Compare with LLM-guided score results from run_lora_experiment_llmbased.sh"
 echo ""

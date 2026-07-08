@@ -22,7 +22,6 @@ TOKEN_KEYS = {
     "scenario_token",
     "scenario_tokens",
     "token",
-    "log_name",
     "scenario_name",
 }
 

@@ -240,6 +240,8 @@ class PLUTOLoRATrainer(LightningTrainer):
             Loss tensor or None to skip backward pass
         """
         self.total_steps += 1
+        self.current_batch_idx = batch_idx
+        self._nan_debug_batch_context = self._format_nan_debug_batch_context(batch, batch_idx)
         
         # Forward pass
         loss = self._step(batch, prefix="train")
@@ -263,7 +265,8 @@ class PLUTOLoRATrainer(LightningTrainer):
             if loss is not None and (torch.isnan(loss) or torch.isinf(loss)):
                 self.nan_steps_skipped += 1
                 logger.warning(
-                    f"Step {batch_idx}: NaN/Inf loss detected (skipped {self.nan_steps_skipped} total)"
+                    f"Step {batch_idx}: NaN/Inf loss detected (skipped {self.nan_steps_skipped} total)\n"
+                    f"{self._nan_debug_batch_context}"
                 )
                 # Zero gradients and skip backward pass
                 self.optimizers().zero_grad()
@@ -285,6 +288,38 @@ class PLUTOLoRATrainer(LightningTrainer):
                 self.log("train/grad_norm", total_norm, on_step=True, on_epoch=False)
         
         return loss
+
+    def _format_nan_debug_batch_context(
+        self,
+        batch: Tuple[FeaturesType, TargetsType, ScenarioListType],
+        batch_idx: int,
+    ) -> str:
+        """Return compact scenario identifiers for NaN diagnostics."""
+        try:
+            _features, _targets, scenarios = batch
+        except Exception:
+            return f"  batch_idx: {batch_idx}\n  scenarios: <unavailable>"
+
+        rows = []
+        for scenario in scenarios:
+            token = getattr(scenario, "token", None)
+            log_name = getattr(scenario, "log_name", None)
+            scenario_type = getattr(scenario, "scenario_type", None)
+            scenario_name = getattr(scenario, "scenario_name", None)
+            rows.append(
+                {
+                    "token": token,
+                    "log_name": log_name,
+                    "scenario_type": scenario_type,
+                    "scenario_name": scenario_name,
+                }
+            )
+
+        return (
+            f"  batch_idx: {batch_idx}\n"
+            f"  global_step: {getattr(self.trainer, 'global_step', 'unknown')}\n"
+            f"  scenarios: {rows}"
+        )
     
     def on_train_batch_end(self, outputs, batch, batch_idx):
         """Log NaN step statistics and update EMA."""
@@ -417,6 +452,7 @@ class PLUTOLoRATrainer(LightningTrainer):
                 min_lr=1e-6,
                 warmup_steps=self.warmup_steps,
                 epochs=self.epochs,
+                total_steps=total_steps,
             )
         except TypeError:
             # Fallback: use epochs if total_steps not supported
@@ -503,8 +539,13 @@ class PLUTOLoRATrainer(LightningTrainer):
             checkpoint["optimizer_states"] = []
             checkpoint["lr_schedulers"] = []
             logger.info("  → Cleared optimizer_states and lr_schedulers from checkpoint")
-            # Keep model state_dict - we still want to load model weights
-            logger.info("  ✓ Will load model weights but re-initialize optimizer")
+            # Reset Lightning's loop progress so stage max_epochs is interpreted as
+            # stage-local epochs while still loading the previous stage's weights.
+            checkpoint.pop("loops", None)
+            checkpoint["epoch"] = 0
+            checkpoint["global_step"] = 0
+            logger.info("  → Reset loop progress, epoch, and global_step for a fresh curriculum stage")
+            logger.info("  ✓ Will load model weights but re-initialize optimizer/scheduler")
     
     def save_lora_only(self, filepath: str) -> None:
         """Save LoRA-only checkpoint."""

@@ -29,7 +29,7 @@ METHODS = {
     "zeroshot": "quick_test_zeroshot_test14_hard",
     "lossbased": "quick_test_lossbased_test14_hard",
     "randombucket": "quick_test_curriculum_randombucket_test14_hard",
-    "llm_guided": "quick_test_curriculum_llmbased_test14_hard",
+    "llm_guided": "quick_test_curriculum_llm_guided_v2_test14_hard",
 }
 
 EVAL_METHODS = list(METHODS)

@@ -52,13 +52,37 @@ class NaNProtectionCallback(Callback):
         
         if has_nan_grad or has_inf_grad or has_nan_param:
             self.nan_steps += 1
+            batch_context = getattr(
+                pl_module,
+                "_nan_debug_batch_context",
+                "  batch_idx: <unknown>\n  scenarios: <unavailable>",
+            )
+            if hasattr(pl_module, "log"):
+                nan_rate_pct = 100.0 * self.nan_steps / max(self.total_steps, 1)
+                pl_module.log(
+                    "train/nan_protection_events",
+                    float(self.nan_steps),
+                    on_step=True,
+                    on_epoch=False,
+                    prog_bar=False,
+                    logger=True,
+                )
+                pl_module.log(
+                    "train/nan_protection_rate_pct",
+                    nan_rate_pct,
+                    on_step=True,
+                    on_epoch=False,
+                    prog_bar=False,
+                    logger=True,
+                )
             logger.error(
                 f"[NaN PROTECTION] Detected NaN/Inf at step {self.total_steps}!\n"
                 f"  NaN in parameters: {has_nan_param}\n"
                 f"  NaN in gradients: {has_nan_grad}\n"
                 f"  Inf in gradients: {has_inf_grad}\n"
                 f"  Affected: {nan_param_names[:5]}{'...' if len(nan_param_names) > 5 else ''}\n"
-                f"  Total NaN steps: {self.nan_steps}/{self.total_steps}"
+                f"  Total NaN steps: {self.nan_steps}/{self.total_steps}\n"
+                f"{batch_context}"
             )
             
             # Zero out all gradients to prevent corruption
@@ -84,4 +108,3 @@ class NaNProtectionCallback(Callback):
                     logger.error(f"[NaN PROTECTION] NaN/Inf detected in {name} right before optimizer step! Skipping.")
                     pl_module.zero_grad(set_to_none=True)
                     return False
-

@@ -35,6 +35,10 @@ RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-true}
 RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-true}
 RUN_MPOC=${RUN_MPOC:-false}
 
+LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v2}
+LLM_CURRICULUM_SLUG=${LLM_CURRICULUM_SLUG:-curriculum_llm_guided_${LLM_CURRICULUM_VERSION}}
+LLM_CURRICULUM_EXP=${LLM_CURRICULUM_EXP:-curriculum_lora_llm_guided_${LLM_CURRICULUM_VERSION}_stage3_high}
+
 if [ "$INTERPLAN_FILTER" != "interplan10" ] && [ "$INTERPLAN_FILTER" != "benchmark_scenarios" ]; then
     echo "❌ Error: Invalid filter. Use 'interplan10' or 'benchmark_scenarios'"
     exit 1
@@ -167,7 +171,7 @@ run_enabled_interplan_models() {
     is_enabled "$RUN_LOSS_BASED" && run_model_interplan_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT" "$experiment_suffix"
     is_enabled "$RUN_UNIFORM" && run_model_interplan_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT" "$experiment_suffix"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_interplan_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$experiment_suffix"
-    is_enabled "$RUN_LLM_CURRICULUM" && run_model_interplan_simulation "LLM-based curriculum" "curriculum_llmbased" "$CURRICULUM_CKPT" "$experiment_suffix"
+    is_enabled "$RUN_LLM_CURRICULUM" && run_model_interplan_simulation "LLM-guided curriculum (${LLM_CURRICULUM_VERSION})" "$LLM_CURRICULUM_SLUG" "$CURRICULUM_CKPT" "$experiment_suffix"
     is_enabled "$RUN_MPOC" && run_model_interplan_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT" "$experiment_suffix"
 }
 
@@ -218,7 +222,7 @@ is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based
 is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "curriculum_lora_lossrank_stage3_high"
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
-is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-based curriculum" "curriculum_lora_llmbased_stage3_high"
+is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "$LLM_CURRICULUM_EXP"
 is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
 
 echo "📍 Using checkpoints:"
@@ -227,7 +231,7 @@ is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO
 is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA)"
 is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT (PLUTO + uniform-principle curriculum LoRA)"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
-is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM curriculum:  $CURRICULUM_CKPT (PLUTO + LLM-based curriculum LoRA)"
+is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT (PLUTO + ${LLM_CURRICULUM_VERSION} curriculum LoRA, slug=${LLM_CURRICULUM_SLUG})"
 is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT (PLUTO + MPOC curriculum LoRA)"
 echo ""
 echo "📍 Using interPlan scenario filter: $INTERPLAN_FILTER"
