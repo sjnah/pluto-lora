@@ -14,6 +14,16 @@
 
 set -e
 
+ACTIVE_QUICK_TEST_LOCK=""
+
+cleanup_quick_test_lock() {
+    if [ -n "$ACTIVE_QUICK_TEST_LOCK" ]; then
+        rm -rf "$ACTIVE_QUICK_TEST_LOCK"
+    fi
+}
+
+trap cleanup_quick_test_lock EXIT INT TERM
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
@@ -21,23 +31,59 @@ NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
 
+apply_cli_overrides() {
+    local positional_filter=""
+    for arg in "$@"; do
+        case "$arg" in
+            INTERPLAN_FILTER=*|EXPERIMENT_SUFFIX=*|COLLECT_TEST=*|\
+            RUN_ZERO_SHOT=*|RUN_RULE_BASED=*|RUN_LOSS_BASED=*|RUN_UNIFORM=*|RUN_RANDOM_BUCKET=*|RUN_LLM_CURRICULUM=*|RUN_MPOC=*|\
+            LLM_CURRICULUM_VERSION=*|LLM_CURRICULUM_SLUG=*|LLM_CURRICULUM_EXP=*|\
+            UNIFORM_CURRICULUM_VERSION=*|UNIFORM_CURRICULUM_SLUG=*|UNIFORM_CURRICULUM_EXP=*)
+                export "$arg"
+                ;;
+            interplan10|benchmark_scenarios)
+                if [ -n "$positional_filter" ]; then
+                    echo "Error: multiple interPlan filters provided: $positional_filter and $arg"
+                    exit 1
+                fi
+                positional_filter="$arg"
+                ;;
+            *)
+                echo "Error: unsupported argument: $arg"
+                echo "Use [interplan10|benchmark_scenarios] and/or supported KEY=value overrides."
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ -n "$positional_filter" ]; then
+        export INTERPLAN_FILTER="$positional_filter"
+    fi
+}
+
+apply_cli_overrides "$@"
+
 # Configuration: InterPlan scenario filter
 # - interplan10: Official benchmark with 80 scenarios (10 per type)
 # - benchmark_scenarios: All 335 scenarios
-INTERPLAN_FILTER=${1:-interplan10}
+INTERPLAN_FILTER=${INTERPLAN_FILTER:-interplan10}
 
 # Model selection flags. Set any flag to false/0/no to skip that model.
-RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true}
-RUN_RULE_BASED=${RUN_RULE_BASED:-true}
-RUN_LOSS_BASED=${RUN_LOSS_BASED:-true}
-RUN_UNIFORM=${RUN_UNIFORM:-true}
-RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-true}
-RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-true}
-RUN_MPOC=${RUN_MPOC:-false}
+RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
+RUN_RULE_BASED=${RUN_RULE_BASED:-false}
+RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
+RUN_UNIFORM=${RUN_UNIFORM:-false}
+RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
+RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
+RUN_MPOC=${RUN_MPOC:-true}
 
-LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v2}
+LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v4.3.12}
 LLM_CURRICULUM_SLUG=${LLM_CURRICULUM_SLUG:-curriculum_llm_guided_${LLM_CURRICULUM_VERSION}}
 LLM_CURRICULUM_EXP=${LLM_CURRICULUM_EXP:-curriculum_lora_llm_guided_${LLM_CURRICULUM_VERSION}_stage3_high}
+
+UNIFORM_CURRICULUM_VERSION=${UNIFORM_CURRICULUM_VERSION:-v2.3.9}
+UNIFORM_CURRICULUM_SLUG=${UNIFORM_CURRICULUM_SLUG:-curriculum_uniform_${UNIFORM_CURRICULUM_VERSION}}
+UNIFORM_CURRICULUM_EXP=${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_${UNIFORM_CURRICULUM_VERSION}_stage3_uniform}
 
 if [ "$INTERPLAN_FILTER" != "interplan10" ] && [ "$INTERPLAN_FILTER" != "benchmark_scenarios" ]; then
     echo "❌ Error: Invalid filter. Use 'interplan10' or 'benchmark_scenarios'"
@@ -46,6 +92,7 @@ fi
 
 # InterPlan paths
 INTERPLAN_SCRIPT="${INTERPLAN_ROOT}/interplan/planning/script/run_simulation.py"
+WANDB_SHIM_ROOT="${SCRIPT_DIR}/wandb_disabled_shim"
 
 if [ ! -f "$INTERPLAN_SCRIPT" ]; then
     echo "❌ Error: InterPlan script not found: $INTERPLAN_SCRIPT"
@@ -58,6 +105,11 @@ run_interplan_simulation() {
     local filter=$1
     local ckpt=$2
     local experiment=$3
+    local eval_pythonpath="${PYTHONPATH:-}"
+
+    if [ "${PLUTO_EVAL_ALLOW_WANDB:-0}" != "1" ]; then
+        eval_pythonpath="${WANDB_SHIM_ROOT}:${eval_pythonpath}"
+    fi
     
     echo "   Running interPlan simulation with checkpoint: $ckpt"
     
@@ -66,7 +118,10 @@ run_interplan_simulation() {
     # Override scenario_builder data_root to point to correct location
     # interPlan's default interplan.yaml points to trainval which may not exist
     # We need to find where the actual data is located
-    python "$INTERPLAN_SCRIPT" \
+    WANDB_DISABLED="${WANDB_DISABLED:-true}" \
+    PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}" \
+    PYTHONPATH="$eval_pythonpath" \
+    python - "$INTERPLAN_SCRIPT" \
         +simulation=default_interplan_benchmark \
         scenario_filter=$filter \
         scenario_builder.data_root='${oc.env:NUPLAN_DATA_ROOT}/nuplan-v1.1_test/data/cache/test' \
@@ -84,7 +139,19 @@ pkg://nuplan.planning.script.config.common,\
 pkg://nuplan.planning.script.config.simulation,\
 pkg://nuplan.planning.script.experiments,\
 ${REPO_ROOT}/config\
-]"
+]" <<'PY'
+import os
+import runpy
+import sys
+
+script = sys.argv[1]
+sys.argv = [script] + sys.argv[2:]
+
+os.environ.setdefault("WANDB_DISABLED", "true")
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
+runpy.run_path(script, run_name="__main__")
+PY
 }
 
 is_enabled() {
@@ -137,6 +204,9 @@ find_lora_checkpoint() {
         echo "Error: ${label} checkpoint not found!"
         echo "   Tried: ${exp_dir}/lora_checkpoints/merged_final.ckpt"
         echo "   Tried: ${exp_dir}/checkpoints/last.ckpt"
+        echo "   Available files:"
+        ls -la "${exp_dir}/lora_checkpoints/" 2>/dev/null || echo "   lora_checkpoints directory not found"
+        ls -la "${exp_dir}/checkpoints/" 2>/dev/null || echo "   checkpoints directory not found"
         exit 1
     fi
 
@@ -149,10 +219,46 @@ run_model_interplan_simulation() {
     local ckpt=$3
     local experiment_suffix=$4
     local experiment="quick_test_interplan_${slug}_${experiment_suffix}"
+    local lock_root="${NUPLAN_EXP_ROOT}/exp/.quick_test_locks"
+    local lock_dir="${lock_root}/${experiment}.lock"
 
     echo ""
     echo "Running ${label} on interPlan (${INTERPLAN_FILTER})..."
+    mkdir -p "$lock_root"
+    if [ -f "${lock_dir}/pid" ]; then
+        local existing_pid
+        existing_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+        local existing_cmd
+        existing_cmd=""
+        if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+            existing_cmd="$(ps -p "$existing_pid" -o args= 2>/dev/null || true)"
+        fi
+        if [ -z "$existing_pid" ] || ! kill -0 "$existing_pid" 2>/dev/null; then
+            echo "Removing stale quick-test lock for ${experiment} (pid ${existing_pid:-unknown} is not running)."
+            rm -rf "$lock_dir"
+        elif [[ "$existing_cmd" != *"quick_test_interplan"* && "$existing_cmd" != *"run_simulation.py"* ]]; then
+            echo "Removing stale quick-test lock for ${experiment} (pid ${existing_pid} is not a quick-test process)."
+            rm -rf "$lock_dir"
+        fi
+    fi
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        echo "Error: ${experiment} appears to be running already."
+        echo "   Lock directory: ${lock_dir}"
+        echo "   Running the same quick-test experiment concurrently can corrupt metrics."
+        exit 1
+    fi
+    echo "$$" > "${lock_dir}/pid"
+    ACTIVE_QUICK_TEST_LOCK="$lock_dir"
+
+    set +e
     run_interplan_simulation "$INTERPLAN_FILTER" "$ckpt" "$experiment"
+    local simulation_status=$?
+    set -e
+    rm -rf "$lock_dir"
+    ACTIVE_QUICK_TEST_LOCK=""
+    if [ "$simulation_status" -ne 0 ]; then
+        return "$simulation_status"
+    fi
 
     local metrics_dir="${NUPLAN_EXP_ROOT}/exp/${experiment}"
     local record_file="${SCENARIO_RECORDS_DIR}/${experiment}.json"
@@ -169,7 +275,7 @@ run_enabled_interplan_models() {
     is_enabled "$RUN_ZERO_SHOT" && run_model_interplan_simulation "Zero-shot" "zeroshot" "$ZERO_SHOT_CKPT" "$experiment_suffix"
     is_enabled "$RUN_RULE_BASED" && run_model_interplan_simulation "Rule-based" "rulebased" "$RULE_BASED_CKPT" "$experiment_suffix"
     is_enabled "$RUN_LOSS_BASED" && run_model_interplan_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT" "$experiment_suffix"
-    is_enabled "$RUN_UNIFORM" && run_model_interplan_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT" "$experiment_suffix"
+    is_enabled "$RUN_UNIFORM" && run_model_interplan_simulation "Uniform FT (${UNIFORM_CURRICULUM_VERSION})" "$UNIFORM_CURRICULUM_SLUG" "$UNIFORM_CKPT" "$experiment_suffix"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_interplan_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$experiment_suffix"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_interplan_simulation "LLM-guided curriculum (${LLM_CURRICULUM_VERSION})" "$LLM_CURRICULUM_SLUG" "$CURRICULUM_CKPT" "$experiment_suffix"
     is_enabled "$RUN_MPOC" && run_model_interplan_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT" "$experiment_suffix"
@@ -220,7 +326,7 @@ fi
 
 is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based" "curriculum_lora_rulebased_stage3_high"
 is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "curriculum_lora_lossrank_stage3_high"
-is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
+is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform FT" "$UNIFORM_CURRICULUM_EXP"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
 is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "$LLM_CURRICULUM_EXP"
 is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
@@ -229,7 +335,7 @@ echo "📍 Using checkpoints:"
 is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, no fine-tuning)"
 is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO + rule-based curriculum LoRA)"
 is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA)"
-is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT (PLUTO + uniform-principle curriculum LoRA)"
+is_enabled "$RUN_UNIFORM" && echo "  Uniform FT:      $UNIFORM_CKPT (PLUTO + ${UNIFORM_CURRICULUM_VERSION} uniform FT LoRA, slug=${UNIFORM_CURRICULUM_SLUG})"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
 is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT (PLUTO + ${LLM_CURRICULUM_VERSION} curriculum LoRA, slug=${LLM_CURRICULUM_SLUG})"
 is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT (PLUTO + MPOC curriculum LoRA)"
@@ -248,11 +354,22 @@ echo "Testing InterPlan Benchmark ($INTERPLAN_FILTER)"
 echo "=============================================="
 
 # Create experiment name suffix based on filter
-if [ "$INTERPLAN_FILTER" = "interplan10" ]; then
+if [ -n "${EXPERIMENT_SUFFIX:-}" ]; then
+    EXP_SUFFIX="$EXPERIMENT_SUFFIX"
+elif [ "$INTERPLAN_FILTER" = "interplan10" ]; then
     EXP_SUFFIX="interplan10"
 else
     EXP_SUFFIX="benchmark_scenarios"
 fi
+
+if [ -z "${COLLECT_TEST:-}" ]; then
+    if [ "$EXP_SUFFIX" = "interplan10" ]; then
+        COLLECT_TEST="interplan10"
+    else
+        COLLECT_TEST="interplan-benchmark"
+    fi
+fi
+
 run_enabled_interplan_models "$EXP_SUFFIX"
 
 ################################################################################
@@ -272,8 +389,22 @@ echo "Time taken: ${MINUTES}m ${SECONDS}s"
 echo ""
 echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_interplan_*_${EXP_SUFFIX}"
 echo ""
-echo "Analyzing results..."
-python ${REPO_ROOT}/scripts/analysis/analyze_quick_test.py
+echo "Collecting result summary..."
+
+COLLECT_METHOD_KEYS=()
+is_enabled "$RUN_ZERO_SHOT" && COLLECT_METHOD_KEYS+=("zeroshot")
+is_enabled "$RUN_RULE_BASED" && COLLECT_METHOD_KEYS+=("rulebased")
+is_enabled "$RUN_LOSS_BASED" && COLLECT_METHOD_KEYS+=("lossbased")
+is_enabled "$RUN_UNIFORM" && COLLECT_METHOD_KEYS+=("$UNIFORM_CURRICULUM_SLUG")
+is_enabled "$RUN_RANDOM_BUCKET" && COLLECT_METHOD_KEYS+=("curriculum_randombucket")
+is_enabled "$RUN_LLM_CURRICULUM" && COLLECT_METHOD_KEYS+=("$LLM_CURRICULUM_SLUG")
+is_enabled "$RUN_MPOC" && COLLECT_METHOD_KEYS+=("curriculum_mpoc")
+COLLECT_METHODS=$(IFS=,; echo "${COLLECT_METHOD_KEYS[*]}")
+
+python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
+    --tests "$COLLECT_TEST" \
+    --methods "$COLLECT_METHODS" \
+    --detail || echo "Could not collect interPlan (${INTERPLAN_FILTER}) summary"
 
 echo ""
 echo "=============================================="

@@ -21,20 +21,20 @@ cd "$REPO_ROOT"
 PRETRAINED_CKPT="${REPO_ROOT}/checkpoints/pluto_1M_aux_cil.ckpt"
 
 LORA_ENABLED=true
-LORA_RANK=8
-LORA_ALPHA=16.0
+LORA_RANK=4
+LORA_ALPHA=8.0
 LORA_DROPOUT=0.05
-LORA_LR=2e-4
-HEAD_LR1=0.0
-HEAD_LR2=1e-5 # 3e-6
-HEAD_LR3=3e-6 # 1e-5
+LORA_LR=5e-5
+HEAD_LR1=1e-5 # 0.0
+HEAD_LR2=1e-5
+HEAD_LR3=3e-5
 
 LR=1e-5
 WEIGHT_DECAY=0.05
-EPOCHS_STAGE1=3
-EPOCHS_STAGE2=7
-EPOCHS_STAGE3=14
-WARMUP_STEPS=200
+EPOCHS_STAGE1=4
+EPOCHS_STAGE2=8
+EPOCHS_STAGE3=12
+WARMUP_STEPS=100
 
 GRADIENT_CLIP_VAL=0.5
 SKIP_NAN_STEPS=true
@@ -44,9 +44,15 @@ ULTRA_MINIMAL=true
 BATCH_SIZE=4
 ACCUMULATE_GRAD_BATCHES=8
 
+SCENARIO_FILTER_UNIFORM="uniform_train_all"
 SCENARIO_FILTER_STAGE1="mpoc_train_easy"
 SCENARIO_FILTER_STAGE2="mpoc_train_medium"
 SCENARIO_FILTER_STAGE3="mpoc_train_hard"
+CURRICULUM_SPLITS="[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]"
+STAGE2_SAMPLING_WEIGHTS="[0.50,0.40,0.10]"
+STAGE3_SAMPLING_WEIGHTS="[0.30,0.50,0.20]"
+MAX_REPEAT_PER_SCENARIO="${MAX_REPEAT_PER_SCENARIO:-4}"
+HARD_SUBTYPE_BALANCE="${HARD_SUBTYPE_BALANCE:-false}"
 
 CURRICULUM_BASE_EXP="curriculum_lora_mpoc"
 
@@ -54,7 +60,7 @@ ensure_mpoc_filters() {
     local missing=0
     mkdir -p "$PLUTO_FILTER_DIR"
 
-    for filter_name in "$SCENARIO_FILTER_STAGE1" "$SCENARIO_FILTER_STAGE2" "$SCENARIO_FILTER_STAGE3"; do
+    for filter_name in "$SCENARIO_FILTER_UNIFORM" "$SCENARIO_FILTER_STAGE1" "$SCENARIO_FILTER_STAGE2" "$SCENARIO_FILTER_STAGE3"; do
         local target="${PLUTO_FILTER_DIR}/${filter_name}.yaml"
         local source="${MPOC_FILTER_DIR}/${filter_name}.yaml"
 
@@ -141,7 +147,8 @@ run_lora_train() {
             skip_nan_steps="$SKIP_NAN_STEPS" \
             remove_invalid_goals="$REMOVE_INVALID_GOALS" \
             data_loader.params.batch_size="$BATCH_SIZE" \
-            +trainer.params.accumulate_grad_batches="$ACCUMULATE_GRAD_BATCHES" \
+            +lightning.trainer.params.accumulate_grad_batches="$ACCUMULATE_GRAD_BATCHES" \
+            lightning.trainer.params.num_sanity_val_steps=0 \
             wandb.name="$experiment_name" \
             "$@"
     else
@@ -158,8 +165,10 @@ run_lora_train() {
             epochs="$epochs" \
             warmup_steps="$WARMUP_STEPS" \
             data_loader.params.batch_size="$BATCH_SIZE" \
-            +trainer.params.accumulate_grad_batches="$ACCUMULATE_GRAD_BATCHES" \
-            wandb.name="$experiment_name"
+            +lightning.trainer.params.accumulate_grad_batches="$ACCUMULATE_GRAD_BATCHES" \
+            lightning.trainer.params.num_sanity_val_steps=0 \
+            wandb.name="$experiment_name" \
+            "$@"
     fi
 }
 
@@ -173,16 +182,17 @@ echo "=============================================="
 echo "PLUTO LoRA Curriculum Experiment (MPOC)"
 echo "=============================================="
 echo "Curriculum filters: $SCENARIO_FILTER_STAGE1, $SCENARIO_FILTER_STAGE2, $SCENARIO_FILTER_STAGE3"
+echo "Reference all-scenario filter: $SCENARIO_FILTER_UNIFORM"
 echo "Experiment base: $CURRICULUM_BASE_EXP"
-echo "Epochs: $EPOCHS_STAGE1+$EPOCHS_STAGE2+$EPOCHS_STAGE3"
+echo "Stage 1 distribution: uniform stabilization via $SCENARIO_FILTER_UNIFORM"
+echo "Stage 2 sampling weights [easy,medium,hard]: $STAGE2_SAMPLING_WEIGHTS"
+echo "Stage 3 sampling weights [easy,medium,hard]: $STAGE3_SAMPLING_WEIGHTS"
+echo "Max epochs: $EPOCHS_STAGE1/$EPOCHS_STAGE2/$EPOCHS_STAGE3 (effective increments: $EPOCHS_STAGE1/$((EPOCHS_STAGE2 - EPOCHS_STAGE1))/$((EPOCHS_STAGE3 - EPOCHS_STAGE2)))"
+echo "Stage resume: keep Lightning optimizer/scheduler/loop state across stages"
+echo "LR note: stage 2/3 resume optimizer state, so stage-specific LR args are not independent"
 echo "Batch size: $BATCH_SIZE, accumulation: $ACCUMULATE_GRAD_BATCHES"
 echo ""
-read -p "Continue? (y/n) " -n 1 -r
 echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Aborted."
-    exit 1
-fi
 
 if [ ! -f "$PRETRAINED_CKPT" ]; then
     echo "Error: Pretrained checkpoint not found: $PRETRAINED_CKPT"
@@ -194,13 +204,13 @@ echo "=============================================="
 echo "EXPERIMENT: MPOC curriculum fine-tuning"
 echo "=============================================="
 
-STAGE1_EXP="${CURRICULUM_BASE_EXP}_stage1_low"
-echo "Stage 1/3: MPOC easy scenarios"
+STAGE1_EXP="${CURRICULUM_BASE_EXP}_stage1_raw"
+echo "Stage 1/3: uniform stabilization"
 run_lora_train \
     "$STAGE1_EXP" \
     "pretrained_ckpt" \
     "$PRETRAINED_CKPT" \
-    "$SCENARIO_FILTER_STAGE1" \
+    "$SCENARIO_FILTER_UNIFORM" \
     "$EPOCHS_STAGE1" \
     "$HEAD_LR1"
 STAGE1_CKPT="$(find_latest_checkpoint "$STAGE1_EXP")"
@@ -215,9 +225,14 @@ run_lora_train \
     "$SCENARIO_FILTER_STAGE1" \
     "$EPOCHS_STAGE2" \
     "$HEAD_LR2" \
-    "+curriculum.splits=[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]" \
-    "+curriculum.sampling_weights=[0.5,0.3,0.2]" \
-    "+lora.is_curriculum_stage=true"
+    "+curriculum.splits=$CURRICULUM_SPLITS" \
+    "+curriculum.sampling_weights=$STAGE2_SAMPLING_WEIGHTS" \
+    "curriculum.score_method=mpoc" \
+    "curriculum.bucket_split_rule=quantile_40_40_20" \
+    "curriculum.max_repeat_per_scenario=$MAX_REPEAT_PER_SCENARIO" \
+    "curriculum.hard_subtype_balance=$HARD_SUBTYPE_BALANCE" \
+    "curriculum.sampling_log_path=artifacts/curriculum_sampling/${STAGE2_EXP}.json" \
+    "curriculum.filter_file_path=${PLUTO_FILTER_DIR}/${SCENARIO_FILTER_STAGE1}.yaml"
 STAGE2_CKPT="$(find_latest_checkpoint "$STAGE2_EXP")"
 echo "Stage 2 checkpoint: $STAGE2_CKPT"
 
@@ -230,9 +245,14 @@ run_lora_train \
     "$SCENARIO_FILTER_STAGE1" \
     "$EPOCHS_STAGE3" \
     "$HEAD_LR3" \
-    "+curriculum.splits=[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]" \
-    "+curriculum.sampling_weights=[0.3,0.3,0.4]" \
-    "+lora.is_curriculum_stage=true"
+    "+curriculum.splits=$CURRICULUM_SPLITS" \
+    "+curriculum.sampling_weights=$STAGE3_SAMPLING_WEIGHTS" \
+    "curriculum.score_method=mpoc" \
+    "curriculum.bucket_split_rule=quantile_40_40_20" \
+    "curriculum.max_repeat_per_scenario=$MAX_REPEAT_PER_SCENARIO" \
+    "curriculum.hard_subtype_balance=$HARD_SUBTYPE_BALANCE" \
+    "curriculum.sampling_log_path=artifacts/curriculum_sampling/${STAGE3_EXP}.json" \
+    "curriculum.filter_file_path=${PLUTO_FILTER_DIR}/${SCENARIO_FILTER_STAGE1}.yaml"
 CURRICULUM_CKPT="$(find_latest_checkpoint "$STAGE3_EXP")"
 
 echo ""

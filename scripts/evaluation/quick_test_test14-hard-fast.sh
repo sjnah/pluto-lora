@@ -8,6 +8,26 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+apply_cli_overrides() {
+    for arg in "$@"; do
+        case "$arg" in
+            RUN_ZERO_SHOT=*|RUN_RULE_BASED=*|RUN_LOSS_BASED=*|RUN_UNIFORM=*|RUN_RANDOM_BUCKET=*|RUN_LLM_CURRICULUM=*|RUN_MPOC=*|\
+            SCENARIOS_PER_STAGE=*|BATCH_SIZE=*|SIMULATION_TYPE=*|SIMULATION_VERBOSE=*|ENABLE_PROGRESS_BAR=*|\
+            LLM_CURRICULUM_VERSION=*|LLM_CURRICULUM_SLUG=*|LLM_CURRICULUM_EXP=*|\
+            UNIFORM_CURRICULUM_VERSION=*|UNIFORM_CURRICULUM_SLUG=*|UNIFORM_CURRICULUM_EXP=*)
+                export "$arg"
+                ;;
+            *)
+                echo "Error: unsupported argument: $arg"
+                echo "Use KEY=value before the command, or one of the supported KEY=value overrides after the script."
+                exit 1
+                ;;
+        esac
+    done
+}
+
+apply_cli_overrides "$@"
+
 export FILTER_NAME="test14-hard-fast"
 export EXPERIMENT_SUFFIX="test14_hard_fast"
 export TEST_LABEL="Test14-Hard Fast"
@@ -20,7 +40,7 @@ export RUN_RULE_BASED="${RUN_RULE_BASED:-false}"
 export RUN_LOSS_BASED="${RUN_LOSS_BASED:-false}"
 export RUN_UNIFORM="${RUN_UNIFORM:-false}"
 export RUN_RANDOM_BUCKET="${RUN_RANDOM_BUCKET:-false}"
-export RUN_LLM_CURRICULUM="${RUN_LLM_CURRICULUM:-true}"
-export RUN_MPOC="${RUN_MPOC:-true}"
+export RUN_LLM_CURRICULUM="${RUN_LLM_CURRICULUM:-false}"
+export RUN_MPOC="${RUN_MPOC:-false}"
 
 exec "${SCRIPT_DIR}/quick_test_test14-hard.sh"

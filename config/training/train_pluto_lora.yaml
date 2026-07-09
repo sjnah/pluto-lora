@@ -101,6 +101,21 @@ data_splits:
 curriculum:
   # Total steps in uniform FT (for alignment)
   uniform_total_steps: 10000
+
+  # Method-independent semantic-priority curriculum controls.
+  score_method: llm
+  bucket_split_rule: quantile_40_40_20
+  stage_mixing_ratio:
+    stage1: [0.75, 0.20, 0.05]
+    stage2: [0.45, 0.40, 0.15]
+    stage3: [0.25, 0.35, 0.40]
+  replacement: true
+  max_repeat_per_scenario: 4
+  hard_subtype_balance: false
+  hard_subtype_cap: 0.60
+  random_seed: ${seed}
+  sampling_log_path: null
+  filter_file_path: null
   
   # Whether to reset optimizer state between stages
   reset_optimizer_each_stage: false
@@ -108,16 +123,20 @@ curriculum:
   # Stage configurations
   stages:
     stage1:
-      splits: ${data_splits.curriculum_stage1}
+      splits:
+        - ${data_splits.curriculum_stage1}
+        - ${data_splits.curriculum_stage2}
+        - ${data_splits.curriculum_stage3}
       epochs: 5
-      sampling_weights: [1.0]  # Only stage1 data
+      sampling_weights: ${curriculum.stage_mixing_ratio.stage1}
     
     stage2:
       splits: 
         - ${data_splits.curriculum_stage1}
         - ${data_splits.curriculum_stage2}
+        - ${data_splits.curriculum_stage3}
       epochs: 5
-      sampling_weights: [0.7, 0.3]  # 70% stage1, 30% stage2
+      sampling_weights: ${curriculum.stage_mixing_ratio.stage2}
     
     stage3:
       splits:
@@ -125,7 +144,7 @@ curriculum:
         - ${data_splits.curriculum_stage2}
         - ${data_splits.curriculum_stage3}
       epochs: 5
-      sampling_weights: [0.5, 0.3, 0.2]  # 50% stage1, 30% stage2, 20% stage3
+      sampling_weights: ${curriculum.stage_mixing_ratio.stage3}
 
 # Pretrained checkpoint
 pretrained_ckpt: checkpoints/pluto_1M_aux_cil.ckpt

@@ -1,5 +1,8 @@
 import logging
 import random
+import json
+from collections import Counter
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytorch_lightning as pl
@@ -30,6 +33,57 @@ from nuplan.planning.utils.multithreading.worker_pool import WorkerPool
 logger = logging.getLogger(__name__)
 
 DataModuleNotSetupError = RuntimeError('Data module has not been setup, call "setup()"')
+
+
+class FixedIndexSampler(torch.utils.data.Sampler[int]):
+    """Sampler that yields a precomputed index list."""
+
+    def __init__(self, indices: List[int]):
+        self._indices = list(indices)
+
+    def __iter__(self):
+        return iter(self._indices)
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+
+def _scenario_id(scenario: AbstractScenario) -> str:
+    return str(getattr(scenario, "token", None) or getattr(scenario, "scenario_name", "unknown"))
+
+
+def _sample_indices_with_repeat_cap(
+    weights: List[float],
+    num_samples: int,
+    max_repeat_per_scenario: int,
+    random_seed: int,
+) -> List[int]:
+    if max_repeat_per_scenario <= 0:
+        raise ValueError("max_repeat_per_scenario must be positive for capped sampling")
+    if len(weights) * max_repeat_per_scenario < num_samples:
+        raise ValueError(
+            "max_repeat_per_scenario is too small for the requested sample count: "
+            f"{len(weights)} scenarios * {max_repeat_per_scenario} < {num_samples}"
+        )
+
+    generator = torch.Generator()
+    generator.manual_seed(int(random_seed))
+    base_weights = torch.as_tensor(weights, dtype=torch.double)
+    selected: List[int] = []
+    counts: Counter[int] = Counter()
+
+    for _ in range(num_samples):
+        effective_weights = base_weights.clone()
+        for index, count in counts.items():
+            if count >= max_repeat_per_scenario:
+                effective_weights[index] = 0.0
+        if float(effective_weights.sum().item()) <= 0.0:
+            raise RuntimeError("No sampling weight remains before reaching num_samples")
+        sampled = int(torch.multinomial(effective_weights, 1, replacement=True, generator=generator).item())
+        selected.append(sampled)
+        counts[sampled] += 1
+
+    return selected
 
 
 class RobustScenarioDataset(torch.utils.data.Dataset):
@@ -187,6 +241,13 @@ def distributed_curriculum_sampler_init(
     scenario_datasets: List[ScenarioDataset],
     split_weights: List[float],
     replacement: bool = True,
+    split_names: Optional[List[str]] = None,
+    max_repeat_per_scenario: int = 0,
+    random_seed: int = 42,
+    sampling_log_path: Optional[str] = None,
+    score_method: str = "",
+    filter_file_path: str = "",
+    hard_subtype_balance: bool = False,
 ) -> WeightedRandomSampler:
     """
     Initialize WeightedSampler for curriculum learning with multiple splits.
@@ -206,22 +267,75 @@ def distributed_curriculum_sampler_init(
     total_weight = sum(split_weights)
     normalized_weights = [w / total_weight for w in split_weights]
     
+    split_names = split_names or [f"split_{idx}" for idx in range(len(scenario_datasets))]
+
     # Create weights for each scenario. Divide by split size so split_weights
     # represent split-level sampling probabilities, not per-sample weights.
     all_weights = []
-    for dataset, weight in zip(scenario_datasets, normalized_weights):
+    scenario_records = []
+    for split_name, dataset, weight in zip(split_names, scenario_datasets, normalized_weights):
         num_scenarios = len(dataset._scenarios)
         assert num_scenarios > 0, "Curriculum split dataset must not be empty"
         all_weights.extend([weight / num_scenarios] * num_scenarios)
+        for scenario in dataset._scenarios:
+            scenario_records.append({"split": split_name, "scenario_id": _scenario_id(scenario)})
+
+    num_samples = sum(len(d) for d in scenario_datasets)
+    sampled_indices: Optional[List[int]] = None
+    if max_repeat_per_scenario > 0:
+        sampled_indices = _sample_indices_with_repeat_cap(
+            all_weights,
+            num_samples=num_samples,
+            max_repeat_per_scenario=max_repeat_per_scenario,
+            random_seed=random_seed,
+        )
+        sampler = FixedIndexSampler(sampled_indices)
+    else:
+        sampler = WeightedRandomSampler(
+            weights=all_weights,
+            num_samples=num_samples,
+            replacement=replacement,
+        )
+
+    if sampling_log_path:
+        split_pool_counts = Counter(record["split"] for record in scenario_records)
+        if sampled_indices is not None:
+            sampled_records = [scenario_records[index] for index in sampled_indices]
+            sampled_split_counts = Counter(record["split"] for record in sampled_records)
+            scenario_counts = Counter(record["scenario_id"] for record in sampled_records)
+            duplicate_count = sum(1 for count in scenario_counts.values() if count > 1)
+            max_repeat_count = max(scenario_counts.values()) if scenario_counts else 0
+            scenario_ids = [record["scenario_id"] for record in sampled_records]
+        else:
+            sampled_split_counts = {}
+            duplicate_count = None
+            max_repeat_count = None
+            scenario_ids = []
+
+        log_payload = {
+            "score_method": score_method,
+            "filter_file_path": filter_file_path,
+            "random_seed": random_seed,
+            "replacement": replacement,
+            "max_repeat_per_scenario": max_repeat_per_scenario,
+            "hard_subtype_balance": hard_subtype_balance,
+            "split_names": split_names,
+            "sampling_weights": normalized_weights,
+            "split_pool_counts": dict(split_pool_counts),
+            "sampled_split_counts": dict(sampled_split_counts),
+            "hard_subtype_counts": {},
+            "duplicated_scenario_count": duplicate_count,
+            "max_repeat_count": max_repeat_count,
+            "scenario_id_list": scenario_ids,
+            "actual_sampled_indices_logged": sampled_indices is not None,
+        }
+        path = Path(sampling_log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(log_payload, f, indent=2, sort_keys=True)
+        logger.info("Saved curriculum sampling log to %s", path)
     
-    # Create weighted sampler
-    weighted_sampler = WeightedRandomSampler(
-        weights=all_weights,
-        num_samples=sum(len(d) for d in scenario_datasets),
-        replacement=replacement,
-    )
-    
-    distributed_weighted_sampler = DistributedSamplerWrapper(weighted_sampler)
+    distributed_weighted_sampler = DistributedSamplerWrapper(sampler)
     return distributed_weighted_sampler
 
 
@@ -245,6 +359,13 @@ class CustomDataModule(pl.LightningDataModule):
         curriculum_splits: Optional[List[str]] = None,
         curriculum_weights: Optional[List[float]] = None,
         all_scenarios_list: Optional[List[List[AbstractScenario]]] = None,
+        curriculum_replacement: bool = True,
+        curriculum_max_repeat_per_scenario: int = 0,
+        curriculum_random_seed: int = 42,
+        curriculum_sampling_log_path: Optional[str] = None,
+        curriculum_score_method: str = "",
+        curriculum_filter_file_path: str = "",
+        hard_subtype_balance: bool = False,
     ) -> None:
         """
         Initialize the class.
@@ -298,6 +419,13 @@ class CustomDataModule(pl.LightningDataModule):
         self._curriculum_splits = curriculum_splits
         self._curriculum_weights = curriculum_weights
         self._all_scenarios_list = all_scenarios_list  # List of scenario lists, one per split
+        self._curriculum_replacement = curriculum_replacement
+        self._curriculum_max_repeat_per_scenario = curriculum_max_repeat_per_scenario
+        self._curriculum_random_seed = curriculum_random_seed
+        self._curriculum_sampling_log_path = curriculum_sampling_log_path
+        self._curriculum_score_method = curriculum_score_method
+        self._curriculum_filter_file_path = curriculum_filter_file_path
+        self._hard_subtype_balance = hard_subtype_balance
 
     @property
     def feature_and_targets_builder(self) -> FeaturePreprocessor:
@@ -411,6 +539,14 @@ class CustomDataModule(pl.LightningDataModule):
             weighted_sampler = distributed_curriculum_sampler_init(
                 scenario_datasets=self._train_datasets,
                 split_weights=self._curriculum_weights,
+                replacement=self._curriculum_replacement,
+                split_names=list(self._curriculum_splits),
+                max_repeat_per_scenario=int(self._curriculum_max_repeat_per_scenario or 0),
+                random_seed=int(self._curriculum_random_seed),
+                sampling_log_path=self._curriculum_sampling_log_path,
+                score_method=self._curriculum_score_method,
+                filter_file_path=self._curriculum_filter_file_path,
+                hard_subtype_balance=bool(self._hard_subtype_balance),
             )
             
             # Combine all datasets into one

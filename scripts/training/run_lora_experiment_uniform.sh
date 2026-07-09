@@ -1,9 +1,10 @@
 #!/bin/bash
 # PLUTO LoRA fine-tuning experiment using the uniform fine-tuning baseline.
 #
-# This baseline mirrors the current LLM-guided wrapper's LoRA/head-LR schedule,
-# stage resets, and update budget, but every stage uses the shared common-valid
-# all-scenario filter instead of difficulty buckets.
+# This baseline keeps the same 3-stage experiment shape as curriculum methods,
+# but every stage uses the shared common-valid all-scenario filter instead of
+# difficulty buckets. Stage 2/3 resume checkpoint state instead of resetting the
+# Lightning loop, so max_epochs values are cumulative.
 
 set -e
 
@@ -24,7 +25,7 @@ LORA_RANK=4
 LORA_ALPHA=8.0
 LORA_DROPOUT=0.05
 LORA_LR=5e-5
-HEAD_LR1=0.0
+HEAD_LR1=1e-5 # 0.0
 HEAD_LR2=1e-5
 HEAD_LR3=3e-5
 
@@ -44,7 +45,7 @@ BATCH_SIZE=4
 ACCUMULATE_GRAD_BATCHES=8
 
 SCENARIO_FILTER_UNIFORM="uniform_train_all"
-UNIFORM_CURRICULUM_VERSION="${UNIFORM_CURRICULUM_VERSION:-v2.3.8}"
+UNIFORM_CURRICULUM_VERSION="${UNIFORM_CURRICULUM_VERSION:-v2.3.9}"
 CURRICULUM_BASE_EXP="${CURRICULUM_BASE_EXP:-curriculum_lora_uniform_${UNIFORM_CURRICULUM_VERSION}}"
 
 find_latest_checkpoint() {
@@ -138,7 +139,9 @@ echo "PLUTO LoRA Uniform Fine-Tuning Baseline (${UNIFORM_CURRICULUM_VERSION})"
 echo "=============================================="
 echo "Scenario filter: $SCENARIO_FILTER_UNIFORM"
 echo "Experiment base: $CURRICULUM_BASE_EXP"
-echo "Epochs: $EPOCHS_STAGE1+$EPOCHS_STAGE2+$EPOCHS_STAGE3"
+echo "Max epochs: $EPOCHS_STAGE1/$EPOCHS_STAGE2/$EPOCHS_STAGE3 (effective increments: $EPOCHS_STAGE1/$((EPOCHS_STAGE2 - EPOCHS_STAGE1))/$((EPOCHS_STAGE3 - EPOCHS_STAGE2)))"
+echo "Stage resume: keep Lightning optimizer/scheduler/loop state across stages"
+echo "LR note: stage 2/3 resume optimizer state, so stage-specific LR args are not independent"
 echo "Batch size: $BATCH_SIZE, accumulation: $ACCUMULATE_GRAD_BATCHES"
 echo ""
 echo
@@ -166,28 +169,26 @@ STAGE1_CKPT="$(find_latest_checkpoint "$STAGE1_EXP")"
 echo "Stage 1 checkpoint: $STAGE1_CKPT"
 
 STAGE2_EXP="${CURRICULUM_BASE_EXP}_stage2_uniform"
-echo "Stage 2/3: uniform distribution with stage-2 head LR"
+echo "Stage 2/3: uniform distribution, continuing from stage 1"
 run_lora_train \
     "$STAGE2_EXP" \
     "checkpoint" \
     "$STAGE1_CKPT" \
     "$SCENARIO_FILTER_UNIFORM" \
     "$EPOCHS_STAGE2" \
-    "$HEAD_LR2" \
-    "+lora.is_curriculum_stage=true"
+    "$HEAD_LR2"
 STAGE2_CKPT="$(find_latest_checkpoint "$STAGE2_EXP")"
 echo "Stage 2 checkpoint: $STAGE2_CKPT"
 
 STAGE3_EXP="${CURRICULUM_BASE_EXP}_stage3_uniform"
-echo "Stage 3/3: uniform distribution with stage-3 head LR"
+echo "Stage 3/3: uniform distribution, continuing from stage 2"
 run_lora_train \
     "$STAGE3_EXP" \
     "checkpoint" \
     "$STAGE2_CKPT" \
     "$SCENARIO_FILTER_UNIFORM" \
     "$EPOCHS_STAGE3" \
-    "$HEAD_LR3" \
-    "+lora.is_curriculum_stage=true"
+    "$HEAD_LR3"
 UNIFORM_CKPT="$(find_latest_checkpoint "$STAGE3_EXP")"
 
 echo ""

@@ -7,12 +7,43 @@
 
 set -e
 
+ACTIVE_QUICK_TEST_LOCK=""
+
+cleanup_quick_test_lock() {
+    if [ -n "$ACTIVE_QUICK_TEST_LOCK" ]; then
+        rm -rf "$ACTIVE_QUICK_TEST_LOCK"
+    fi
+}
+
+trap cleanup_quick_test_lock EXIT INT TERM
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
+
+apply_cli_overrides() {
+    for arg in "$@"; do
+        case "$arg" in
+            FILTER_NAME=*|EXPERIMENT_SUFFIX=*|TEST_LABEL=*|SCENARIO_BUILDER=*|COLLECT_TEST=*|\
+            RUN_ZERO_SHOT=*|RUN_RULE_BASED=*|RUN_LOSS_BASED=*|RUN_UNIFORM=*|RUN_RANDOM_BUCKET=*|RUN_LLM_CURRICULUM=*|RUN_MPOC=*|\
+            SCENARIOS_PER_STAGE=*|BATCH_SIZE=*|SIMULATION_TYPE=*|SIMULATION_VERBOSE=*|ENABLE_PROGRESS_BAR=*|\
+            LLM_CURRICULUM_VERSION=*|LLM_CURRICULUM_SLUG=*|LLM_CURRICULUM_EXP=*|\
+            UNIFORM_CURRICULUM_VERSION=*|UNIFORM_CURRICULUM_SLUG=*|UNIFORM_CURRICULUM_EXP=*)
+                export "$arg"
+                ;;
+            *)
+                echo "Error: unsupported argument: $arg"
+                echo "Use KEY=value before the command, or one of the supported KEY=value overrides after the script."
+                exit 1
+                ;;
+        esac
+    done
+}
+
+apply_cli_overrides "$@"
 
 # Configuration: Number of scenarios to evaluate per stage
 # This ensures all enabled methods use the same scenarios
@@ -24,6 +55,7 @@ FILTER_NAME=${FILTER_NAME:-val14_benchmark}
 EXPERIMENT_SUFFIX=${EXPERIMENT_SUFFIX:-val14_benchmark}
 TEST_LABEL=${TEST_LABEL:-Val14 Benchmark}
 SCENARIO_BUILDER=${SCENARIO_BUILDER:-nuplan_v1_1_val}
+COLLECT_TEST=${COLLECT_TEST:-val14-benchmark}
 
 # Model selection flags. Set any flag to false/0/no to skip that model.
 RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
@@ -34,9 +66,13 @@ RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
 RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
 RUN_MPOC=${RUN_MPOC:-false}
 
-LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v2}
+LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v4.3.12}
 LLM_CURRICULUM_SLUG=${LLM_CURRICULUM_SLUG:-curriculum_llm_guided_${LLM_CURRICULUM_VERSION}}
 LLM_CURRICULUM_EXP=${LLM_CURRICULUM_EXP:-curriculum_lora_llm_guided_${LLM_CURRICULUM_VERSION}_stage3_high}
+
+UNIFORM_CURRICULUM_VERSION=${UNIFORM_CURRICULUM_VERSION:-v2.3.12}
+UNIFORM_CURRICULUM_SLUG=${UNIFORM_CURRICULUM_SLUG:-curriculum_uniform_${UNIFORM_CURRICULUM_VERSION}}
+UNIFORM_CURRICULUM_EXP=${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_${UNIFORM_CURRICULUM_VERSION}_stage3_uniform}
 
 # Batch size for processing scenarios (to avoid OOM)
 # If set to a positive number, scenarios will be automatically split into batches and processed sequentially.
@@ -45,14 +81,28 @@ LLM_CURRICULUM_EXP=${LLM_CURRICULUM_EXP:-curriculum_lora_llm_guided_${LLM_CURRIC
 # Recommended: 150-300 depending on available memory
 BATCH_SIZE=${BATCH_SIZE:-100}
 
+# Simulation type: nonreactive preserves the historical Val14 quick-test path.
+# Set to "reactive" for closed_loop_reactive_agents.
+SIMULATION_TYPE=${SIMULATION_TYPE:-nonreactive}
+SIMULATION_VERBOSE=${SIMULATION_VERBOSE:-true}
+ENABLE_PROGRESS_BAR=${ENABLE_PROGRESS_BAR:-true}
+
 # Helper function to run simulation (with automatic batching if enabled)
 run_simulation() {
     local filter=$1
     local ckpt=$2
     local experiment=$3
     local scenario_builder=${4:-""}
+
+    if [ "$SIMULATION_TYPE" = "reactive" ]; then
+        local simulation_config="closed_loop_reactive_agents"
+        local observation_config="idm_agents_observation"
+    else
+        local simulation_config="closed_loop_nonreactive_agents"
+        local observation_config="box_observation"
+    fi
     
-    if [ -n "$BATCH_SIZE" ] && [ "$BATCH_SIZE" -gt 0 ]; then
+    if [ -n "$BATCH_SIZE" ] && [ "$BATCH_SIZE" -gt 0 ] && [ "$SIMULATION_TYPE" != "reactive" ]; then
         local builder_arg=""
         [ -n "$scenario_builder" ] && builder_arg="--scenario-builder $scenario_builder"
         
@@ -62,19 +112,27 @@ run_simulation() {
             --experiment "$experiment" \
             --batch-size $BATCH_SIZE \
             --limit $SCENARIOS_PER_STAGE \
+            --simulation-verbose "$SIMULATION_VERBOSE" \
             $builder_arg
     else
+        if [ -n "$BATCH_SIZE" ] && [ "$BATCH_SIZE" -gt 0 ] && [ "$SIMULATION_TYPE" = "reactive" ]; then
+            echo "⚠️  Warning: Batching is not yet supported for reactive agents."
+            echo "   Running without batching..."
+        fi
+
         local builder_arg=""
         [ -n "$scenario_builder" ] && builder_arg="scenario_builder=$scenario_builder"
         
         python -X faulthandler ${REPO_ROOT}/run_simulation.py \
-            +simulation=closed_loop_nonreactive_agents \
-            observation=box_observation \
+            +simulation=$simulation_config \
+            observation=$observation_config \
             ego_controller=two_stage_controller \
             planner=pluto_planner \
             +planner.pluto_planner.planner_ckpt="$ckpt" \
             scenario_filter="$filter" \
             scenario_filter.limit_total_scenarios=$SCENARIOS_PER_STAGE \
+            verbose="$SIMULATION_VERBOSE" \
+            enable_simulation_progress_bar="$ENABLE_PROGRESS_BAR" \
             $builder_arg \
             experiment="$experiment" \
             worker=sequential
@@ -149,10 +207,38 @@ run_model_simulation() {
     local scenario_builder=${6:-""}
     local run_mode=${7:-batched}
     local experiment="quick_test_${slug}_${experiment_suffix}"
+    local lock_root="${NUPLAN_EXP_ROOT}/exp/.quick_test_locks"
+    local lock_dir="${lock_root}/${experiment}.lock"
 
     echo ""
     echo "Running ${label} on ${filter}..."
+    mkdir -p "$lock_root"
+    if [ -f "${lock_dir}/pid" ]; then
+        local existing_pid
+        existing_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+        local existing_cmd
+        existing_cmd=""
+        if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+            existing_cmd="$(ps -p "$existing_pid" -o args= 2>/dev/null || true)"
+        fi
+        if [ -z "$existing_pid" ] || ! kill -0 "$existing_pid" 2>/dev/null; then
+            echo "Removing stale quick-test lock for ${experiment} (pid ${existing_pid:-unknown} is not running)."
+            rm -rf "$lock_dir"
+        elif [[ "$existing_cmd" != *"quick_test_val14"* && "$existing_cmd" != *"run_simulation.py"* ]]; then
+            echo "Removing stale quick-test lock for ${experiment} (pid ${existing_pid} is not a quick-test process)."
+            rm -rf "$lock_dir"
+        fi
+    fi
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        echo "Error: ${experiment} appears to be running already."
+        echo "   Lock directory: ${lock_dir}"
+        echo "   Running the same quick-test experiment concurrently can corrupt metrics."
+        exit 1
+    fi
+    echo "$$" > "${lock_dir}/pid"
+    ACTIVE_QUICK_TEST_LOCK="$lock_dir"
 
+    set +e
     if [ "$run_mode" = "direct_thread_pool" ]; then
         python ${REPO_ROOT}/run_simulation.py \
             +simulation=closed_loop_nonreactive_agents \
@@ -167,6 +253,13 @@ run_model_simulation() {
             worker.max_workers=1
     else
         run_simulation "$filter" "$ckpt" "$experiment" "$scenario_builder"
+    fi
+    local simulation_status=$?
+    set -e
+    rm -rf "$lock_dir"
+    ACTIVE_QUICK_TEST_LOCK=""
+    if [ "$simulation_status" -ne 0 ]; then
+        return "$simulation_status"
     fi
 
     local metrics_dir="${NUPLAN_EXP_ROOT}/exp/${experiment}/metrics"
@@ -185,7 +278,7 @@ run_enabled_models() {
     is_enabled "$RUN_ZERO_SHOT" && run_model_simulation "Zero-shot" "zeroshot" "$ZERO_SHOT_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
     is_enabled "$RUN_RULE_BASED" && run_model_simulation "Rule-based" "rulebased" "$RULE_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
     is_enabled "$RUN_LOSS_BASED" && run_model_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
-    is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform curriculum" "curriculum_uniform" "$UNIFORM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
+    is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform FT (${UNIFORM_CURRICULUM_VERSION})" "$UNIFORM_CURRICULUM_SLUG" "$UNIFORM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-guided curriculum (${LLM_CURRICULUM_VERSION})" "$LLM_CURRICULUM_SLUG" "$CURRICULUM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
     is_enabled "$RUN_MPOC" && run_model_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT" "$filter" "$experiment_suffix" "$scenario_builder" "$run_mode"
@@ -199,17 +292,47 @@ source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"
 mkdir -p "$SCENARIO_RECORDS_DIR"
 
+if [ ! -f "${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml" ]; then
+    echo "Error: scenario filter not found: ${REPO_ROOT}/config/scenario_filter/${FILTER_NAME}.yaml"
+    exit 1
+fi
+
+if [ "$SCENARIOS_PER_STAGE" = "auto" ]; then
+    SCENARIOS_PER_STAGE=$(python - "$REPO_ROOT/config/scenario_filter/${FILTER_NAME}.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+in_tokens = False
+count = 0
+for line in path.read_text(encoding="utf-8").splitlines():
+    stripped = line.strip()
+    if stripped == "scenario_tokens:":
+        in_tokens = True
+        continue
+    if in_tokens and stripped and not stripped.startswith("-"):
+        break
+    if in_tokens and stripped.startswith("-"):
+        count += 1
+print(count)
+PY
+)
+fi
+
 ENABLED_MODEL_COUNT=$(count_enabled_models)
 if [ "$ENABLED_MODEL_COUNT" -eq 0 ]; then
     echo "Error: All model flags are disabled. Enable at least one model."
     exit 1
 fi
 
-SCENARIO_GROUP_COUNT=4
-TOTAL_SCENARIOS=$((SCENARIOS_PER_STAGE * SCENARIO_GROUP_COUNT * ENABLED_MODEL_COUNT))
+TOTAL_SCENARIOS=$((SCENARIOS_PER_STAGE * ENABLED_MODEL_COUNT))
 
 echo "=============================================="
-echo "Quick Test: ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per group, ${ENABLED_MODEL_COUNT} enabled models)"
+echo "Quick Test (${TEST_LABEL}): ${TOTAL_SCENARIOS} scenario executions (${SCENARIOS_PER_STAGE} per method)"
+echo "Using ${FILTER_NAME}.yaml filter with ${SCENARIO_BUILDER} dataset"
+echo "Simulation type: ${SIMULATION_TYPE}"
+echo "Simulation verbose: ${SIMULATION_VERBOSE}"
+echo "Progress bar: ${ENABLE_PROGRESS_BAR}"
 echo "Validating metric collection"
 echo "=============================================="
 echo ""
@@ -225,7 +348,7 @@ fi
 
 is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based" "curriculum_lora_rulebased_stage3_high"
 is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "curriculum_lora_lossrank_stage3_high"
-is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform curriculum" "curriculum_lora_uniform"
+is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform FT" "$UNIFORM_CURRICULUM_EXP"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
 is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "$LLM_CURRICULUM_EXP"
 is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
@@ -234,10 +357,13 @@ echo "📍 Using checkpoints:"
 is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, no fine-tuning)"
 is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO + rule-based curriculum LoRA)"
 is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA)"
-is_enabled "$RUN_UNIFORM" && echo "  Uniform:         $UNIFORM_CKPT (PLUTO + uniform-principle curriculum LoRA)"
+is_enabled "$RUN_UNIFORM" && echo "  Uniform FT:      $UNIFORM_CKPT (PLUTO + ${UNIFORM_CURRICULUM_VERSION} uniform FT LoRA, slug=${UNIFORM_CURRICULUM_SLUG})"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
 is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT (PLUTO + ${LLM_CURRICULUM_VERSION} curriculum LoRA, slug=${LLM_CURRICULUM_SLUG})"
 is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT (PLUTO + MPOC curriculum LoRA)"
+echo ""
+echo "📍 Using scenario filter: ${FILTER_NAME}"
+echo "📍 Using scenario builder: ${SCENARIO_BUILDER}"
 echo ""
 
 START_TIME=$(date +%s)
@@ -295,8 +421,22 @@ echo "Time taken: ${MINUTES}m ${SECONDS}s"
 echo ""
 echo "Results are in: ${NUPLAN_EXP_ROOT}/exp/quick_test_*"
 echo ""
-echo "Analyzing results..."
-python ${REPO_ROOT}/scripts/analysis/analyze_quick_test.py
+echo "Collecting result summary..."
+
+COLLECT_METHOD_KEYS=()
+is_enabled "$RUN_ZERO_SHOT" && COLLECT_METHOD_KEYS+=("zeroshot")
+is_enabled "$RUN_RULE_BASED" && COLLECT_METHOD_KEYS+=("rulebased")
+is_enabled "$RUN_LOSS_BASED" && COLLECT_METHOD_KEYS+=("lossbased")
+is_enabled "$RUN_UNIFORM" && COLLECT_METHOD_KEYS+=("$UNIFORM_CURRICULUM_SLUG")
+is_enabled "$RUN_RANDOM_BUCKET" && COLLECT_METHOD_KEYS+=("curriculum_randombucket")
+is_enabled "$RUN_LLM_CURRICULUM" && COLLECT_METHOD_KEYS+=("$LLM_CURRICULUM_SLUG")
+is_enabled "$RUN_MPOC" && COLLECT_METHOD_KEYS+=("curriculum_mpoc")
+COLLECT_METHODS=$(IFS=,; echo "${COLLECT_METHOD_KEYS[*]}")
+
+python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
+    --tests "$COLLECT_TEST" \
+    --methods "$COLLECT_METHODS" \
+    --detail || echo "Could not collect ${FILTER_NAME} summary"
 
 echo ""
 echo "=============================================="

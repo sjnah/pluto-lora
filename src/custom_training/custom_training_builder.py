@@ -129,8 +129,9 @@ def build_lightning_datamodule(
     )
 
     # Check if this is a curriculum learning stage with multiple splits
-    curriculum_splits = cfg.get("curriculum", {}).get("splits", None)
-    curriculum_weights = cfg.get("curriculum", {}).get("sampling_weights", None)
+    curriculum_cfg = cfg.get("curriculum", {})
+    curriculum_splits = curriculum_cfg.get("splits", None)
+    curriculum_weights = curriculum_cfg.get("sampling_weights", None)
     all_scenarios_list = None
     
     if curriculum_splits is not None and curriculum_weights is not None:
@@ -234,6 +235,13 @@ def build_lightning_datamodule(
         curriculum_splits=curriculum_splits,
         curriculum_weights=curriculum_weights,
         all_scenarios_list=all_scenarios_list,
+        curriculum_replacement=bool(curriculum_cfg.get("replacement", True)),
+        curriculum_max_repeat_per_scenario=int(curriculum_cfg.get("max_repeat_per_scenario", 0)),
+        curriculum_random_seed=int(curriculum_cfg.get("random_seed", cfg.get("seed", 42))),
+        curriculum_sampling_log_path=curriculum_cfg.get("sampling_log_path", None),
+        curriculum_score_method=str(curriculum_cfg.get("score_method", "")),
+        curriculum_filter_file_path=str(curriculum_cfg.get("filter_file_path", "")),
+        hard_subtype_balance=bool(curriculum_cfg.get("hard_subtype_balance", False)),
         **cfg.data_loader.datamodule,
     )
 

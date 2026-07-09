@@ -4,6 +4,10 @@
 # This script intentionally runs only the LLM-guided curriculum path. The
 # uniform-principle curriculum baseline is split into:
 #   scripts/training/run_lora_experiment_uniform.sh
+#
+# Stage 2/3 resume checkpoint state instead of resetting the Lightning loop, so
+# max_epochs values are cumulative while the scenario-filter mixing changes by
+# stage.
 
 set -e
 
@@ -24,9 +28,9 @@ LORA_RANK=4
 LORA_ALPHA=8.0
 LORA_DROPOUT=0.05
 LORA_LR=5e-5
-HEAD_LR1=0.0
+HEAD_LR1=1e-5 #0.0
 HEAD_LR2=1e-5
-HEAD_LR3=3e-5
+HEAD_LR3=1e-5
 
 LR=1e-5
 WEIGHT_DECAY=0.05
@@ -47,10 +51,12 @@ SCENARIO_FILTER_STAGE1="llm_guided_train_easy"
 SCENARIO_FILTER_STAGE2="llm_guided_train_medium"
 SCENARIO_FILTER_STAGE3="llm_guided_train_hard"
 SCENARIO_FILTER_UNIFORM="uniform_train_all"
-SCENARIO_FILTER_VERSION="v2.3.7"
+SCENARIO_FILTER_VERSION="v4.3.12"
 CURRICULUM_SPLITS="[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]"
-STAGE2_SAMPLING_WEIGHTS="[0.55,0.35,0.10]"
+STAGE2_SAMPLING_WEIGHTS="[0.50,0.40,0.10]"
 STAGE3_SAMPLING_WEIGHTS="[0.30,0.50,0.20]"
+MAX_REPEAT_PER_SCENARIO="${MAX_REPEAT_PER_SCENARIO:-4}"
+HARD_SUBTYPE_BALANCE="${HARD_SUBTYPE_BALANCE:-false}"
 
 CURRICULUM_VERSION="${CURRICULUM_VERSION:-${SCENARIO_FILTER_VERSION}}"
 CURRICULUM_BASE_EXP="${CURRICULUM_BASE_EXP:-curriculum_lora_llm_guided_${CURRICULUM_VERSION}}"
@@ -144,9 +150,15 @@ echo "=============================================="
 echo "PLUTO LoRA Curriculum Experiment (LLM-guided ${CURRICULUM_VERSION})"
 echo "=============================================="
 echo "Curriculum filters: $SCENARIO_FILTER_STAGE1, $SCENARIO_FILTER_STAGE2, $SCENARIO_FILTER_STAGE3"
-echo "Stage 1 raw filter: $SCENARIO_FILTER_UNIFORM"
+echo "Scenario filter label source: $SCENARIO_FILTER_VERSION"
+echo "Reference all-scenario filter: $SCENARIO_FILTER_UNIFORM"
 echo "Experiment base: $CURRICULUM_BASE_EXP"
-echo "Epochs: $EPOCHS_STAGE1+$EPOCHS_STAGE2+$EPOCHS_STAGE3"
+echo "Stage 1 distribution: uniform stabilization via $SCENARIO_FILTER_UNIFORM"
+echo "Stage 2 sampling weights [easy,medium,hard]: $STAGE2_SAMPLING_WEIGHTS"
+echo "Stage 3 sampling weights [easy,medium,hard]: $STAGE3_SAMPLING_WEIGHTS"
+echo "Max epochs: $EPOCHS_STAGE1/$EPOCHS_STAGE2/$EPOCHS_STAGE3 (effective increments: $EPOCHS_STAGE1/$((EPOCHS_STAGE2 - EPOCHS_STAGE1))/$((EPOCHS_STAGE3 - EPOCHS_STAGE2)))"
+echo "Stage resume: keep Lightning optimizer/scheduler/loop state across stages"
+echo "LR note: stage 2/3 resume optimizer state, so stage-specific LR args are not independent"
 echo "Batch size: $BATCH_SIZE, accumulation: $ACCUMULATE_GRAD_BATCHES"
 echo ""
 # read -p "Continue? (y/n) " -n 1 -r
@@ -167,7 +179,7 @@ echo "EXPERIMENT: LLM-guided curriculum fine-tuning (${CURRICULUM_VERSION})"
 echo "=============================================="
 
 STAGE1_EXP="${CURRICULUM_BASE_EXP}_stage1_raw"
-echo "Stage 1/3: LLM raw-label distribution"
+echo "Stage 1/3: uniform stabilization"
 run_lora_train \
     "$STAGE1_EXP" \
     "pretrained_ckpt" \
@@ -189,7 +201,12 @@ run_lora_train \
     "$HEAD_LR2" \
     "+curriculum.splits=$CURRICULUM_SPLITS" \
     "+curriculum.sampling_weights=$STAGE2_SAMPLING_WEIGHTS" \
-    "+lora.is_curriculum_stage=true"
+    "curriculum.score_method=llm" \
+    "curriculum.bucket_split_rule=quantile_40_40_20" \
+    "curriculum.max_repeat_per_scenario=$MAX_REPEAT_PER_SCENARIO" \
+    "curriculum.hard_subtype_balance=$HARD_SUBTYPE_BALANCE" \
+    "curriculum.sampling_log_path=artifacts/curriculum_sampling/${STAGE2_EXP}.json" \
+    "curriculum.filter_file_path=${REPO_ROOT}/config/scenario_filter/${SCENARIO_FILTER_STAGE1}.yaml"
 STAGE2_CKPT="$(find_latest_checkpoint "$STAGE2_EXP")"
 echo "Stage 2 checkpoint: $STAGE2_CKPT"
 
@@ -204,7 +221,12 @@ run_lora_train \
     "$HEAD_LR3" \
     "+curriculum.splits=$CURRICULUM_SPLITS" \
     "+curriculum.sampling_weights=$STAGE3_SAMPLING_WEIGHTS" \
-    "+lora.is_curriculum_stage=true"
+    "curriculum.score_method=llm" \
+    "curriculum.bucket_split_rule=quantile_40_40_20" \
+    "curriculum.max_repeat_per_scenario=$MAX_REPEAT_PER_SCENARIO" \
+    "curriculum.hard_subtype_balance=$HARD_SUBTYPE_BALANCE" \
+    "curriculum.sampling_log_path=artifacts/curriculum_sampling/${STAGE3_EXP}.json" \
+    "curriculum.filter_file_path=${REPO_ROOT}/config/scenario_filter/${SCENARIO_FILTER_STAGE1}.yaml"
 CURRICULUM_CKPT="$(find_latest_checkpoint "$STAGE3_EXP")"
 
 echo ""

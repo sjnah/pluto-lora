@@ -16,12 +16,43 @@
 
 set -e
 
+ACTIVE_QUICK_TEST_LOCK=""
+
+cleanup_quick_test_lock() {
+    if [ -n "$ACTIVE_QUICK_TEST_LOCK" ]; then
+        rm -rf "$ACTIVE_QUICK_TEST_LOCK"
+    fi
+}
+
+trap cleanup_quick_test_lock EXIT INT TERM
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
 cd "$REPO_ROOT"
+
+apply_cli_overrides() {
+    for arg in "$@"; do
+        case "$arg" in
+            FILTER_NAME=*|EXPERIMENT_SUFFIX=*|TEST_LABEL=*|SCENARIO_BUILDER=*|COLLECT_TEST=*|\
+            RUN_ZERO_SHOT=*|RUN_RULE_BASED=*|RUN_LOSS_BASED=*|RUN_UNIFORM=*|RUN_RANDOM_BUCKET=*|RUN_LLM_CURRICULUM=*|RUN_MPOC=*|\
+            SCENARIOS_PER_STAGE=*|BATCH_SIZE=*|SIMULATION_TYPE=*|SIMULATION_VERBOSE=*|ENABLE_PROGRESS_BAR=*|\
+            LLM_CURRICULUM_VERSION=*|LLM_CURRICULUM_SLUG=*|LLM_CURRICULUM_EXP=*|\
+            UNIFORM_CURRICULUM_VERSION=*|UNIFORM_CURRICULUM_SLUG=*|UNIFORM_CURRICULUM_EXP=*)
+                export "$arg"
+                ;;
+            *)
+                echo "Error: unsupported argument: $arg"
+                echo "Use KEY=value before the command, or one of the supported KEY=value overrides after the script."
+                exit 1
+                ;;
+        esac
+    done
+}
+
+apply_cli_overrides "$@"
 
 FILTER_NAME=${FILTER_NAME:-test14-hard}
 EXPERIMENT_SUFFIX=${EXPERIMENT_SUFFIX:-test14_hard}
@@ -43,16 +74,14 @@ RUN_RULE_BASED=${RUN_RULE_BASED:-false}
 RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
 RUN_UNIFORM=${RUN_UNIFORM:-false}
 RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
-RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-true}
+RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
 RUN_MPOC=${RUN_MPOC:-false}
 
-LLM_SCENARIO_FILTER_VERSION="v2.3.7"
-
-LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-${LLM_SCENARIO_FILTER_VERSION}}
+LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v4.3.12}
 LLM_CURRICULUM_SLUG=${LLM_CURRICULUM_SLUG:-curriculum_llm_guided_${LLM_CURRICULUM_VERSION}}
 LLM_CURRICULUM_EXP=${LLM_CURRICULUM_EXP:-curriculum_lora_llm_guided_${LLM_CURRICULUM_VERSION}_stage3_high}
 
-UNIFORM_CURRICULUM_VERSION=${UNIFORM_CURRICULUM_VERSION:-v2.3.8}
+UNIFORM_CURRICULUM_VERSION=${UNIFORM_CURRICULUM_VERSION:-v2.3.12}
 UNIFORM_CURRICULUM_SLUG=${UNIFORM_CURRICULUM_SLUG:-curriculum_uniform_${UNIFORM_CURRICULUM_VERSION}}
 UNIFORM_CURRICULUM_EXP=${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_${UNIFORM_CURRICULUM_VERSION}_stage3_uniform}
 
@@ -196,10 +225,46 @@ run_model_simulation() {
     local experiment_suffix=$5
     local scenario_builder=${6:-""}
     local experiment="quick_test_${slug}_${experiment_suffix}"
+    local lock_root="${NUPLAN_EXP_ROOT}/exp/.quick_test_locks"
+    local lock_dir="${lock_root}/${experiment}.lock"
 
     echo ""
     echo "Running ${label} on ${filter}..."
+    mkdir -p "$lock_root"
+    if [ -f "${lock_dir}/pid" ]; then
+        local existing_pid
+        existing_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+        local existing_cmd
+        existing_cmd=""
+        if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+            existing_cmd="$(ps -p "$existing_pid" -o args= 2>/dev/null || true)"
+        fi
+        if [ -z "$existing_pid" ] || ! kill -0 "$existing_pid" 2>/dev/null; then
+            echo "Removing stale quick-test lock for ${experiment} (pid ${existing_pid:-unknown} is not running)."
+            rm -rf "$lock_dir"
+        elif [[ "$existing_cmd" != *"quick_test_test14-hard"* && "$existing_cmd" != *"run_simulation.py"* ]]; then
+            echo "Removing stale quick-test lock for ${experiment} (pid ${existing_pid} is not a quick-test process)."
+            rm -rf "$lock_dir"
+        fi
+    fi
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        echo "Error: ${experiment} appears to be running already."
+        echo "   Lock directory: ${lock_dir}"
+        echo "   Running the same quick-test experiment concurrently can corrupt metrics."
+        exit 1
+    fi
+    echo "$$" > "${lock_dir}/pid"
+    ACTIVE_QUICK_TEST_LOCK="$lock_dir"
+
+    set +e
     run_simulation "$filter" "$ckpt" "$experiment" "$scenario_builder"
+    local simulation_status=$?
+    set -e
+    rm -rf "$lock_dir"
+    ACTIVE_QUICK_TEST_LOCK=""
+    if [ "$simulation_status" -ne 0 ]; then
+        return "$simulation_status"
+    fi
 
     local metrics_dir="${NUPLAN_EXP_ROOT}/exp/${experiment}/metrics"
     local record_file="${SCENARIO_RECORDS_DIR}/${experiment}.json"

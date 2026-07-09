@@ -47,6 +47,11 @@ ACCUMULATE_GRAD_BATCHES=8
 SCENARIO_FILTER_STAGE1="randombucket_train_easy"
 SCENARIO_FILTER_STAGE2="randombucket_train_medium"
 SCENARIO_FILTER_STAGE3="randombucket_train_hard"
+CURRICULUM_SPLITS="[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]"
+STAGE2_SAMPLING_WEIGHTS="[0.45,0.40,0.15]"
+STAGE3_SAMPLING_WEIGHTS="[0.25,0.35,0.40]"
+MAX_REPEAT_PER_SCENARIO="${MAX_REPEAT_PER_SCENARIO:-4}"
+HARD_SUBTYPE_BALANCE="${HARD_SUBTYPE_BALANCE:-false}"
 
 CURRICULUM_BASE_EXP="curriculum_lora_randombucket"
 
@@ -76,7 +81,7 @@ ensure_randombucket_filters() {
         echo "  python scripts/experiments/pluto/create_randombucket_filters.py \\"
         echo "    --input-filter ${WORKSPACE_ROOT}/pluto/config/scenario_filter/uniform_train_all.yaml \\"
         echo "    --output-dir artifacts/scenario_filters/pluto_randombucket \\"
-        echo "    --bucket-fracs 0.30 0.30 0.40 \\"
+        echo "    --bucket-fracs 0.40 0.40 0.20 \\"
         echo "    --seed 42 \\"
         echo "    --copy-to-pluto-config"
         exit 1
@@ -214,8 +219,14 @@ run_lora_train \
     "$SCENARIO_FILTER_STAGE1" \
     "$EPOCHS_STAGE2" \
     "$HEAD_LR2" \
-    "+curriculum.splits=[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]" \
-    "+curriculum.sampling_weights=[0.5,0.3,0.2]" \
+    "+curriculum.splits=$CURRICULUM_SPLITS" \
+    "+curriculum.sampling_weights=$STAGE2_SAMPLING_WEIGHTS" \
+    "+curriculum.score_method=random" \
+    "+curriculum.bucket_split_rule=quantile_40_40_20" \
+    "+curriculum.max_repeat_per_scenario=$MAX_REPEAT_PER_SCENARIO" \
+    "+curriculum.hard_subtype_balance=$HARD_SUBTYPE_BALANCE" \
+    "+curriculum.sampling_log_path=artifacts/curriculum_sampling/${STAGE2_EXP}.json" \
+    "+curriculum.filter_file_path=${RANDOMBUCKET_FILTER_DIR}/${SCENARIO_FILTER_STAGE1}.yaml" \
     "+lora.is_curriculum_stage=true"
 STAGE2_CKPT="$(find_latest_checkpoint "$STAGE2_EXP")"
 echo "Stage 2 checkpoint: $STAGE2_CKPT"
@@ -229,8 +240,14 @@ run_lora_train \
     "$SCENARIO_FILTER_STAGE1" \
     "$EPOCHS_STAGE3" \
     "$HEAD_LR3" \
-    "+curriculum.splits=[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]" \
-    "+curriculum.sampling_weights=[0.3,0.3,0.4]" \
+    "+curriculum.splits=$CURRICULUM_SPLITS" \
+    "+curriculum.sampling_weights=$STAGE3_SAMPLING_WEIGHTS" \
+    "+curriculum.score_method=random" \
+    "+curriculum.bucket_split_rule=quantile_40_40_20" \
+    "+curriculum.max_repeat_per_scenario=$MAX_REPEAT_PER_SCENARIO" \
+    "+curriculum.hard_subtype_balance=$HARD_SUBTYPE_BALANCE" \
+    "+curriculum.sampling_log_path=artifacts/curriculum_sampling/${STAGE3_EXP}.json" \
+    "+curriculum.filter_file_path=${RANDOMBUCKET_FILTER_DIR}/${SCENARIO_FILTER_STAGE1}.yaml" \
     "+lora.is_curriculum_stage=true"
 CURRICULUM_CKPT="$(find_latest_checkpoint "$STAGE3_EXP")"
 
