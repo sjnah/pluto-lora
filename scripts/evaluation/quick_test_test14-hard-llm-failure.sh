@@ -26,7 +26,22 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 INTERPLAN_ROOT="${WORKSPACE_ROOT}/interPlan"
+WANDB_SHIM_ROOT="${SCRIPT_DIR}/wandb_disabled_shim"
 cd "$REPO_ROOT"
+
+configure_eval_import_environment() {
+    if [ "${PLUTO_EVAL_ALLOW_WANDB:-0}" != "1" ] && [ -f "${WANDB_SHIM_ROOT}/wandb.py" ]; then
+        case ":${PYTHONPATH:-}:" in
+            *":${WANDB_SHIM_ROOT}:"*) ;;
+            *) export PYTHONPATH="${WANDB_SHIM_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" ;;
+        esac
+    fi
+
+    export WANDB_DISABLED="${WANDB_DISABLED:-true}"
+    export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
+}
+
+configure_eval_import_environment
 
 FILTER_NAME="test14-hard-llm-failure"
 EXPERIMENT_SUFFIX="test14_hard_llm_failure"
@@ -59,6 +74,45 @@ SIMULATION_TYPE=${SIMULATION_TYPE:-reactive}
 SIMULATION_VERBOSE=${SIMULATION_VERBOSE:-true}
 ENABLE_PROGRESS_BAR=${ENABLE_PROGRESS_BAR:-true}
 
+# InterPlan-style scenario scheduling. With num_gpus=0, Ray hides CUDA from
+# workers and PLUTO falls back to CPU, allowing multiple scenario workers
+# without several processes competing for the same GPU.
+SIMULATION_WORKER=${SIMULATION_WORKER:-ray_distributed}
+SIMULATION_WORKER_THREADS=${SIMULATION_WORKER_THREADS:-}
+SIMULATION_WORKER_MAX_WORKERS=${SIMULATION_WORKER_MAX_WORKERS:-}
+SIMULATION_NUM_GPUS=${SIMULATION_NUM_GPUS:-0}
+SIMULATION_NUM_CPUS=${SIMULATION_NUM_CPUS:-1}
+SIMULATION_RAY_LOG_TO_DRIVER=${SIMULATION_RAY_LOG_TO_DRIVER:-true}
+
+WORKER_OVERRIDES=()
+
+build_worker_overrides() {
+    WORKER_OVERRIDES=(
+        "worker=${SIMULATION_WORKER}"
+        "number_of_gpus_allocated_per_simulation=${SIMULATION_NUM_GPUS}"
+        "number_of_cpus_allocated_per_simulation=${SIMULATION_NUM_CPUS}"
+    )
+    if [ "$SIMULATION_WORKER" = "ray_distributed" ]; then
+        [ -n "$SIMULATION_WORKER_THREADS" ] && WORKER_OVERRIDES+=("worker.threads_per_node=${SIMULATION_WORKER_THREADS}")
+        [ -n "$SIMULATION_RAY_LOG_TO_DRIVER" ] && WORKER_OVERRIDES+=("worker.log_to_driver=${SIMULATION_RAY_LOG_TO_DRIVER}")
+    elif [ "$SIMULATION_WORKER" = "single_machine_thread_pool" ]; then
+        [ -n "$SIMULATION_WORKER_MAX_WORKERS" ] && WORKER_OVERRIDES+=("worker.max_workers=${SIMULATION_WORKER_MAX_WORKERS}")
+    fi
+}
+
+batched_worker_args() {
+    printf '%s\n' \
+        --worker "$SIMULATION_WORKER" \
+        --num-gpus "$SIMULATION_NUM_GPUS" \
+        --num-cpus "$SIMULATION_NUM_CPUS"
+    if [ "$SIMULATION_WORKER" = "ray_distributed" ]; then
+        [ -n "$SIMULATION_WORKER_THREADS" ] && printf '%s\n' --worker-threads "$SIMULATION_WORKER_THREADS"
+        [ -n "$SIMULATION_RAY_LOG_TO_DRIVER" ] && printf '%s\n' --ray-log-to-driver "$SIMULATION_RAY_LOG_TO_DRIVER"
+    elif [ "$SIMULATION_WORKER" = "single_machine_thread_pool" ]; then
+        [ -n "$SIMULATION_WORKER_MAX_WORKERS" ] && printf '%s\n' --worker-max-workers "$SIMULATION_WORKER_MAX_WORKERS"
+    fi
+}
+
 run_simulation() {
     local filter=$1
     local ckpt=$2
@@ -76,6 +130,8 @@ run_simulation() {
     if [ -n "$BATCH_SIZE" ] && [ "$BATCH_SIZE" -gt 0 ] && [ "$SIMULATION_TYPE" != "reactive" ]; then
         local builder_arg=""
         [ -n "$scenario_builder" ] && builder_arg="--scenario-builder $scenario_builder"
+        local worker_args=()
+        mapfile -t worker_args < <(batched_worker_args)
 
         python ${SCRIPT_DIR}/run_simulation_batched.py \
             --filter "$filter" \
@@ -84,6 +140,7 @@ run_simulation() {
             --batch-size $BATCH_SIZE \
             --limit $SCENARIOS_PER_STAGE \
             --simulation-verbose "$SIMULATION_VERBOSE" \
+            "${worker_args[@]}" \
             $builder_arg
     else
         if [ -n "$BATCH_SIZE" ] && [ "$BATCH_SIZE" -gt 0 ] && [ "$SIMULATION_TYPE" = "reactive" ]; then
@@ -93,6 +150,7 @@ run_simulation() {
 
         local builder_arg=""
         [ -n "$scenario_builder" ] && builder_arg="scenario_builder=$scenario_builder"
+        build_worker_overrides
 
         python -X faulthandler ${REPO_ROOT}/run_simulation.py \
             +simulation=$simulation_config \
@@ -106,7 +164,7 @@ run_simulation() {
             enable_simulation_progress_bar="$ENABLE_PROGRESS_BAR" \
             $builder_arg \
             experiment="$experiment" \
-            worker=sequential
+            "${WORKER_OVERRIDES[@]}"
     fi
 }
 
@@ -245,6 +303,7 @@ echo "Using ${FILTER_NAME}.yaml filter with nuplan-v1.1_test dataset"
 echo "Simulation type: ${SIMULATION_TYPE}"
 echo "Simulation verbose: ${SIMULATION_VERBOSE}"
 echo "Progress bar: ${ENABLE_PROGRESS_BAR}"
+echo "Worker: ${SIMULATION_WORKER} (num_gpus=${SIMULATION_NUM_GPUS}, num_cpus=${SIMULATION_NUM_CPUS}, threads=${SIMULATION_WORKER_THREADS:-auto})"
 echo "=============================================="
 echo ""
 

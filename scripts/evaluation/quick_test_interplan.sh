@@ -66,15 +66,15 @@ apply_cli_overrides "$@"
 # Configuration: InterPlan scenario filter
 # - interplan10: Official benchmark with 80 scenarios (10 per type)
 # - benchmark_scenarios: All 335 scenarios
-INTERPLAN_FILTER=${INTERPLAN_FILTER:-interplan10}
+INTERPLAN_FILTER=${INTERPLAN_FILTER:-benchmark_scenarios} # interplan10 or benchmark_scenarios
 
 # Model selection flags. Set any flag to false/0/no to skip that model.
-RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
-RUN_RULE_BASED=${RUN_RULE_BASED:-false}
+RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true}
+RUN_RULE_BASED=${RUN_RULE_BASED:-true}
 RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
-RUN_UNIFORM=${RUN_UNIFORM:-false}
+RUN_UNIFORM=${RUN_UNIFORM:-true}
 RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
-RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-false}
+RUN_LLM_CURRICULUM=${RUN_LLM_CURRICULUM:-true}
 RUN_MPOC=${RUN_MPOC:-true}
 
 LLM_CURRICULUM_VERSION=${LLM_CURRICULUM_VERSION:-v4.3.12}

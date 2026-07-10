@@ -242,6 +242,8 @@ def build_lightning_datamodule(
         curriculum_score_method=str(curriculum_cfg.get("score_method", "")),
         curriculum_filter_file_path=str(curriculum_cfg.get("filter_file_path", "")),
         hard_subtype_balance=bool(curriculum_cfg.get("hard_subtype_balance", False)),
+        curriculum_sampler_mode=str(curriculum_cfg.get("sampler_mode", "legacy_weighted")),
+        curriculum_phase_name=str(curriculum_cfg.get("phase_name", "")),
         **cfg.data_loader.datamodule,
     )
 

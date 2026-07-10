@@ -105,6 +105,15 @@ curriculum:
   # Method-independent semantic-priority curriculum controls.
   score_method: llm
   bucket_split_rule: quantile_40_40_20
+  bucketization_mode: raw_macro
+  percentile_split_seed: 42
+  tie_break_mode: stable_hash
+  sampler_mode: legacy_weighted
+  phase_name: ""
+  # New percentile_ehu experiments use:
+  # easy warm-up -> mild hard focus -> uniform consolidation.
+  # This is not a direct Rampp reproduction; it combines easy-to-hard
+  # curriculum, mild hard-example emphasis, and final uniform consolidation.
   stage_mixing_ratio:
     stage1: [0.75, 0.20, 0.05]
     stage2: [0.45, 0.40, 0.15]

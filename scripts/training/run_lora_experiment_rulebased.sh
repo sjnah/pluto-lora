@@ -17,6 +17,16 @@ NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 PLUTO_FILTER_DIR="${REPO_ROOT}/config/scenario_filter"
 cd "$REPO_ROOT"
 
+CURRICULUM_MODE="${CURRICULUM_MODE:-percentile_ehu}"
+if [ "$CURRICULUM_MODE" = "percentile_ehu" ]; then
+    METHOD=rule METHOD_LABEL="Rule-based" bash "${SCRIPT_DIR}/run_lora_experiment_percentile_ehu.sh"
+    exit $?
+fi
+if [ "$CURRICULUM_MODE" != "legacy_raw" ]; then
+    echo "Unsupported CURRICULUM_MODE=${CURRICULUM_MODE}. Use percentile_ehu or legacy_raw."
+    exit 1
+fi
+
 # ============================================================================
 # EASY PARAMETER TUNING - keep aligned with run_lora_experiment_llmbased.sh
 # ============================================================================
@@ -57,7 +67,8 @@ STAGE3_SAMPLING_WEIGHTS="[0.30,0.50,0.20]"
 MAX_REPEAT_PER_SCENARIO="${MAX_REPEAT_PER_SCENARIO:-4}"
 HARD_SUBTYPE_BALANCE="${HARD_SUBTYPE_BALANCE:-false}"
 
-CURRICULUM_BASE_EXP="curriculum_lora_rulebased"
+CURRICULUM_VERSION="${CURRICULUM_VERSION:-v4.3.13}"
+CURRICULUM_BASE_EXP="${CURRICULUM_BASE_EXP:-curriculum_lora_rulebased_legacy_raw_${CURRICULUM_VERSION}}"
 
 ensure_rulebased_filters() {
     local missing=0

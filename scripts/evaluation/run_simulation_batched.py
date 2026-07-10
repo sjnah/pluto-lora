@@ -65,7 +65,9 @@ def resolve_exp_root(runtime_root: Path) -> Path:
 NUPLAN_EXP_ROOT = resolve_exp_root(NUPLAN_RUNTIME_ROOT)
 EXP_ROOT = NUPLAN_EXP_ROOT / "exp"
 MANIFEST_DIR = REPO_ROOT / "artifacts" / "records" / "batched_runs"
+WANDB_SHIM_ROOT = SCRIPT_DIR / "wandb_disabled_shim"
 EXTRA_PYTHONPATHS = [
+    WANDB_SHIM_ROOT,
     REPO_ROOT,
     NUPLAN_DEVKIT_ROOT,
     WORKSPACE_ROOT / "interPlan",
@@ -75,7 +77,11 @@ EXTRA_PYTHONPATHS = [
 def configure_pythonpath() -> None:
     """Expose sibling checkout packages used by Hydra config search paths."""
     existing_paths = os.environ.get("PYTHONPATH", "").split(os.pathsep)
-    prepend_paths = [str(path) for path in EXTRA_PYTHONPATHS if path.exists()]
+    extra_paths = list(EXTRA_PYTHONPATHS)
+    if os.environ.get("PLUTO_EVAL_ALLOW_WANDB") == "1":
+        extra_paths = [path for path in extra_paths if path != WANDB_SHIM_ROOT]
+
+    prepend_paths = [str(path) for path in extra_paths if path.exists()]
 
     for path in reversed(prepend_paths):
         if path not in sys.path:
@@ -96,6 +102,8 @@ def configure_pythonpath() -> None:
         os.environ["NUPLAN_EXP_ROOT"] = str(NUPLAN_EXP_ROOT)
 
     os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    os.environ.setdefault("WANDB_DISABLED", "true")
+    os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
     if not Path(os.environ["NUPLAN_DATA_ROOT"]).exists():
         raise FileNotFoundError(
@@ -452,10 +460,24 @@ def log_worker_plan(cmd: List[str], batch_size: int) -> None:
     """Print the expected scenario-level worker concurrency for this batch."""
     worker = hydra_override_value(cmd, "worker") or "default"
     max_workers = hydra_override_value(cmd, "worker.max_workers")
+    threads_per_node = hydra_override_value(cmd, "worker.threads_per_node")
+    num_gpus = hydra_override_value(cmd, "number_of_gpus_allocated_per_simulation")
+    num_cpus = hydra_override_value(cmd, "number_of_cpus_allocated_per_simulation")
 
     if worker == "sequential":
         concurrency = 1
         detail = "sequential"
+    elif worker == "ray_distributed":
+        if threads_per_node in (None, "", "null", "None"):
+            concurrency = os.cpu_count() or 1
+            detail = "all logical CPUs via Ray"
+        else:
+            try:
+                concurrency = int(threads_per_node)
+                detail = f"worker.threads_per_node={threads_per_node}"
+            except ValueError:
+                concurrency = None
+                detail = f"worker.threads_per_node={threads_per_node}"
     elif worker == "single_machine_thread_pool":
         if max_workers in (None, "", "null", "None"):
             concurrency = os.cpu_count() or 1
@@ -478,6 +500,8 @@ def log_worker_plan(cmd: List[str], batch_size: int) -> None:
         print(f"   scenario concurrency: unknown ({detail})")
     else:
         print(f"   scenario concurrency: up to {min(concurrency, batch_size)} simultaneous scenario(s) ({detail})")
+    if num_gpus is not None or num_cpus is not None:
+        print(f"   per-simulation resources: num_gpus={num_gpus or 'config default'}, num_cpus={num_cpus or 'config default'}")
 
 
 def run_simulation_batch(
@@ -491,6 +515,12 @@ def run_simulation_batch(
     batch_filter_name: str,
     planner: str,
     planner_overrides: Optional[List[str]],
+    worker: str,
+    worker_threads: Optional[int],
+    worker_max_workers: Optional[int],
+    ray_log_to_driver: Optional[str],
+    num_gpus: Optional[str],
+    num_cpus: Optional[str],
     disable_simulation_log: bool,
     simulation_verbose: bool,
     quiet: bool,
@@ -510,12 +540,23 @@ def run_simulation_batch(
         f'planner={planner}',
         f'scenario_filter={batch_filter_name}',
         f'experiment={experiment_name}',
-        'worker=sequential',
+        f'worker={worker}',
         f'verbose={str(simulation_verbose).lower()}',
     ]
 
     if planner == "pluto_planner" and ckpt_path is not None:
         cmd.append(f'+planner.pluto_planner.planner_ckpt={ckpt_path}')
+    if num_gpus is not None:
+        cmd.append(f'number_of_gpus_allocated_per_simulation={num_gpus}')
+    if num_cpus is not None:
+        cmd.append(f'number_of_cpus_allocated_per_simulation={num_cpus}')
+    if worker == "ray_distributed":
+        if worker_threads is not None:
+            cmd.append(f'worker.threads_per_node={worker_threads}')
+        if ray_log_to_driver is not None:
+            cmd.append(f'worker.log_to_driver={ray_log_to_driver}')
+    elif worker == "single_machine_thread_pool" and worker_max_workers is not None:
+        cmd.append(f'worker.max_workers={worker_max_workers}')
     if disable_simulation_log:
         cmd.append('callback=no_simulation_log')
     if quiet:
@@ -584,6 +625,35 @@ Example:
     )
     parser.add_argument('--batch-size', type=int, default=200, 
                        help='Number of scenarios per batch (default: 200)')
+    parser.add_argument(
+        '--worker',
+        default='sequential',
+        choices=['sequential', 'single_machine_thread_pool', 'ray_distributed'],
+        help='nuPlan worker for scenarios inside each batch (default: sequential)',
+    )
+    parser.add_argument(
+        '--worker-threads',
+        type=int,
+        help='Ray threads_per_node. Omit to let Ray use all logical CPUs.',
+    )
+    parser.add_argument(
+        '--worker-max-workers',
+        type=int,
+        help='single_machine_thread_pool max_workers.',
+    )
+    parser.add_argument(
+        '--ray-log-to-driver',
+        choices=['true', 'false'],
+        help='Ray worker.log_to_driver override.',
+    )
+    parser.add_argument(
+        '--num-gpus',
+        help='Hydra number_of_gpus_allocated_per_simulation override.',
+    )
+    parser.add_argument(
+        '--num-cpus',
+        help='Hydra number_of_cpus_allocated_per_simulation override.',
+    )
     parser.add_argument('--limit', type=int, help='Total limit on scenarios')
     parser.add_argument('--scenario-builder', help='Scenario builder name')
     parser.add_argument('--dry-run', action='store_true', 
@@ -625,6 +695,13 @@ Example:
         print(f"Planner overrides: {args.planner_override}")
     print(f"Experiment: {args.experiment}")
     print(f"Batch size: {args.batch_size} scenarios")
+    print(f"Worker: {args.worker}")
+    if args.worker_threads is not None:
+        print(f"Ray threads per node: {args.worker_threads}")
+    if args.worker_max_workers is not None:
+        print(f"Thread-pool max workers: {args.worker_max_workers}")
+    if args.num_gpus is not None or args.num_cpus is not None:
+        print(f"Per-simulation resources: num_gpus={args.num_gpus or 'config default'}, num_cpus={args.num_cpus or 'config default'}")
     if args.limit:
         print(f"Total limit: {args.limit} scenarios")
     print(f"{'='*70}\n")
@@ -725,6 +802,12 @@ Example:
                 batch_filter_name=batch_filter_name,
                 planner=args.planner,
                 planner_overrides=args.planner_override,
+                worker=args.worker,
+                worker_threads=args.worker_threads,
+                worker_max_workers=args.worker_max_workers,
+                ray_log_to_driver=args.ray_log_to_driver,
+                num_gpus=args.num_gpus,
+                num_cpus=args.num_cpus,
                 disable_simulation_log=args.disable_simulation_log,
                 simulation_verbose=args.simulation_verbose == 'true',
                 quiet=args.quiet,

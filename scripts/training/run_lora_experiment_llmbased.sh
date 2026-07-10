@@ -17,6 +17,16 @@ WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 NUPLAN_DEVKIT_ROOT="${NUPLAN_DEVKIT_ROOT:-${WORKSPACE_ROOT}/nuplan-devkit}"
 cd "$REPO_ROOT"
 
+CURRICULUM_MODE="${CURRICULUM_MODE:-percentile_ehu}"
+if [ "$CURRICULUM_MODE" = "percentile_ehu" ]; then
+    METHOD=llm METHOD_LABEL="LLM-guided" bash "${SCRIPT_DIR}/run_lora_experiment_percentile_ehu.sh"
+    exit $?
+fi
+if [ "$CURRICULUM_MODE" != "legacy_raw" ]; then
+    echo "Unsupported CURRICULUM_MODE=${CURRICULUM_MODE}. Use percentile_ehu or legacy_raw."
+    exit 1
+fi
+
 # ============================================================================
 # EASY PARAMETER TUNING
 # ============================================================================
@@ -51,7 +61,7 @@ SCENARIO_FILTER_STAGE1="llm_guided_train_easy"
 SCENARIO_FILTER_STAGE2="llm_guided_train_medium"
 SCENARIO_FILTER_STAGE3="llm_guided_train_hard"
 SCENARIO_FILTER_UNIFORM="uniform_train_all"
-SCENARIO_FILTER_VERSION="v4.3.12"
+SCENARIO_FILTER_VERSION="${SCENARIO_FILTER_VERSION:-v4.3.13}"
 CURRICULUM_SPLITS="[$SCENARIO_FILTER_STAGE1,$SCENARIO_FILTER_STAGE2,$SCENARIO_FILTER_STAGE3]"
 STAGE2_SAMPLING_WEIGHTS="[0.50,0.40,0.10]"
 STAGE3_SAMPLING_WEIGHTS="[0.30,0.50,0.20]"

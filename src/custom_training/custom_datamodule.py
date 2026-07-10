@@ -30,6 +30,8 @@ from nuplan.planning.training.preprocessing.feature_preprocessor import (
 )
 from nuplan.planning.utils.multithreading.worker_pool import WorkerPool
 
+from src.custom_training.curriculum_sampling import build_exact_bucket_quota_indices
+
 logger = logging.getLogger(__name__)
 
 DataModuleNotSetupError = RuntimeError('Data module has not been setup, call "setup()"')
@@ -46,6 +48,69 @@ class FixedIndexSampler(torch.utils.data.Sampler[int]):
 
     def __len__(self) -> int:
         return len(self._indices)
+
+
+class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
+    """Sampler that enforces exact bucket-level draw quotas per epoch."""
+
+    def __init__(
+        self,
+        bucket_sizes: List[int],
+        target_proportions: List[float],
+        max_repeat_per_scenario: int,
+        random_seed: int,
+        sampling_log_path: Optional[str] = None,
+        score_method: str = "",
+        phase_name: str = "",
+    ):
+        self._bucket_sizes = [int(size) for size in bucket_sizes]
+        self._target_proportions = [float(value) for value in target_proportions]
+        self._max_repeat_per_scenario = int(max_repeat_per_scenario)
+        self._random_seed = int(random_seed)
+        self._sampling_log_path = sampling_log_path
+        self._score_method = score_method
+        self._phase_name = phase_name
+        self._epoch: Optional[int] = None
+
+    def set_epoch(self, epoch: int) -> None:
+        self._epoch = int(epoch)
+
+    def _current_epoch(self) -> int:
+        if self._epoch is not None:
+            return self._epoch
+        # DistributedSamplerWrapper calls torch.manual_seed(self.epoch) before
+        # iterating the wrapped sampler, so torch.initial_seed() carries the
+        # epoch in the existing nuPlan wrapper path.
+        return int(torch.initial_seed())
+
+    def __iter__(self):
+        epoch = self._current_epoch()
+        indices, metadata = build_exact_bucket_quota_indices(
+            self._bucket_sizes,
+            self._target_proportions,
+            max_repeat_per_scenario=self._max_repeat_per_scenario,
+            seed=self._random_seed,
+            epoch=epoch,
+        )
+        metadata["score_method"] = self._score_method
+        metadata["phase_name"] = self._phase_name
+        rank = 0
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            rank = int(torch.distributed.get_rank())
+        metadata["distributed_rank"] = rank
+        if self._sampling_log_path:
+            base_path = Path(self._sampling_log_path)
+            log_path = base_path.with_name(
+                f"{base_path.stem}.epoch_{epoch:04d}.rank_{rank:03d}{base_path.suffix or '.json'}"
+            )
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, sort_keys=True)
+            logger.info("Saved exact quota curriculum sampling log to %s", log_path)
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return sum(self._bucket_sizes)
 
 
 def _scenario_id(scenario: AbstractScenario) -> str:
@@ -248,6 +313,8 @@ def distributed_curriculum_sampler_init(
     score_method: str = "",
     filter_file_path: str = "",
     hard_subtype_balance: bool = False,
+    sampler_mode: str = "legacy_weighted",
+    phase_name: str = "",
 ) -> WeightedRandomSampler:
     """
     Initialize WeightedSampler for curriculum learning with multiple splits.
@@ -269,8 +336,27 @@ def distributed_curriculum_sampler_init(
     
     split_names = split_names or [f"split_{idx}" for idx in range(len(scenario_datasets))]
 
-    # Create weights for each scenario. Divide by split size so split_weights
-    # represent split-level sampling probabilities, not per-sample weights.
+    sampler_mode = str(sampler_mode or "legacy_weighted")
+    if sampler_mode not in {"legacy_weighted", "exact_bucket_quota"}:
+        raise ValueError(f"Unsupported curriculum sampler_mode: {sampler_mode}")
+
+    if sampler_mode == "exact_bucket_quota":
+        bucket_sizes = [len(dataset._scenarios) for dataset in scenario_datasets]
+        sampler = ExactBucketQuotaSampler(
+            bucket_sizes=bucket_sizes,
+            target_proportions=normalized_weights,
+            max_repeat_per_scenario=max_repeat_per_scenario,
+            random_seed=random_seed,
+            sampling_log_path=sampling_log_path,
+            score_method=score_method,
+            phase_name=phase_name,
+        )
+        distributed_weighted_sampler = DistributedSamplerWrapper(sampler)
+        return distributed_weighted_sampler
+
+    # Legacy mode: create weights for each scenario. Divide by split size so
+    # split_weights represent split-level sampling probabilities, not per-sample
+    # weights.
     all_weights = []
     scenario_records = []
     for split_name, dataset, weight in zip(split_names, scenario_datasets, normalized_weights):
@@ -314,6 +400,8 @@ def distributed_curriculum_sampler_init(
 
         log_payload = {
             "score_method": score_method,
+            "sampler_mode": sampler_mode,
+            "phase_name": phase_name,
             "filter_file_path": filter_file_path,
             "random_seed": random_seed,
             "replacement": replacement,
@@ -366,6 +454,8 @@ class CustomDataModule(pl.LightningDataModule):
         curriculum_score_method: str = "",
         curriculum_filter_file_path: str = "",
         hard_subtype_balance: bool = False,
+        curriculum_sampler_mode: str = "legacy_weighted",
+        curriculum_phase_name: str = "",
     ) -> None:
         """
         Initialize the class.
@@ -426,6 +516,8 @@ class CustomDataModule(pl.LightningDataModule):
         self._curriculum_score_method = curriculum_score_method
         self._curriculum_filter_file_path = curriculum_filter_file_path
         self._hard_subtype_balance = hard_subtype_balance
+        self._curriculum_sampler_mode = curriculum_sampler_mode
+        self._curriculum_phase_name = curriculum_phase_name
 
     @property
     def feature_and_targets_builder(self) -> FeaturePreprocessor:
@@ -547,6 +639,8 @@ class CustomDataModule(pl.LightningDataModule):
                 score_method=self._curriculum_score_method,
                 filter_file_path=self._curriculum_filter_file_path,
                 hard_subtype_balance=bool(self._hard_subtype_balance),
+                sampler_mode=str(self._curriculum_sampler_mode or "legacy_weighted"),
+                phase_name=str(self._curriculum_phase_name or ""),
             )
             
             # Combine all datasets into one

@@ -176,7 +176,7 @@ NRCLS_WEIGHTED_METRICS = {
     "ego_is_comfortable": 2.0,
 }
 
-NRCLS_DETAIL_COLUMNS = [
+CLS_DETAIL_COLUMNS = [
     ("no_ego_at_fault_collisions", "without_collision", "w/o Collision"),
     ("drivable_area_compliance", "drivable", "Drivable"),
     ("ego_is_making_progress", "progress", "Progress"),
@@ -186,6 +186,15 @@ NRCLS_DETAIL_COLUMNS = [
     ("speed_limit_compliance", "speed_limit", "in Speed limit"),
     ("ego_is_comfortable", "comfortable", "Comfortable"),
 ]
+
+INTERPLAN_EXTRA_DETAIL_COLUMNS = [
+    ("lane_changes_to_goal", "lane_changes_to_goal", "Lane changes to goal"),
+]
+
+SIMULATION_CHALLENGES = {
+    "closed_loop_reactive_agents": ("reactive", "R-CLS"),
+    "closed_loop_nonreactive_agents": ("nonreactive", "NR-CLS"),
+}
 
 
 def parse_csv_arg(value: str) -> list[str]:
@@ -423,6 +432,80 @@ def find_interplan_metric_dir(exp_root: Path, exp_name: str) -> tuple[Path | Non
     return None, "missing"
 
 
+def challenge_from_text(text: str) -> str | None:
+    keyed_matches = re.findall(
+        r"^\s*(?:job_name|challenge_name|simulation)\s*:\s*['\"]?(closed_loop_(?:nonreactive|reactive)_agents)",
+        text,
+        flags=re.MULTILINE,
+    )
+    unique_keyed = sorted(set(keyed_matches))
+    if len(unique_keyed) == 1:
+        return unique_keyed[0]
+
+    all_matches = sorted(set(re.findall(r"closed_loop_(?:nonreactive|reactive)_agents", text)))
+    if len(all_matches) == 1:
+        return all_matches[0]
+    return None
+
+
+def metadata_files_for_metrics_dir(metrics_dir: Path) -> list[Path]:
+    run_dir = metrics_dir.parent if metrics_dir.name == "metrics" else metrics_dir
+    return [
+        run_dir / "code" / "hydra" / "config.yaml",
+        run_dir / ".hydra" / "config.yaml",
+        run_dir / ".hydra" / "overrides.yaml",
+    ]
+
+
+def challenge_from_metrics_dir(metrics_dir: Path) -> str | None:
+    for metadata_file in metadata_files_for_metrics_dir(metrics_dir):
+        if not metadata_file.exists():
+            continue
+        try:
+            challenge = challenge_from_text(metadata_file.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        if challenge:
+            return challenge
+
+    aggregate_dirs = [metrics_dir, metrics_dir.parent / "aggregator_metric"]
+    for aggregate_dir in aggregate_dirs:
+        if not aggregate_dir.exists():
+            continue
+        for aggregate_file in aggregate_dir.glob("*weighted_average_metrics_*.parquet"):
+            challenge = challenge_from_text(aggregate_file.name)
+            if challenge:
+                return challenge
+    return None
+
+
+def infer_closed_loop_scoring(metrics_dirs: list[Path]) -> dict[str, Any]:
+    challenges = [challenge for metrics_dir in metrics_dirs if (challenge := challenge_from_metrics_dir(metrics_dir))]
+    unique = sorted(set(challenges))
+    if len(unique) > 1:
+        return {
+            "ok": False,
+            "error": f"Mixed simulation challenges: {', '.join(unique)}",
+        }
+
+    if not unique:
+        return {
+            "ok": True,
+            "simulation_challenge": None,
+            "simulation_type": "unknown",
+            "metric_type": "CLS",
+        }
+
+    challenge = unique[0]
+    simulation_type, metric_type = SIMULATION_CHALLENGES[challenge]
+    return {
+        "ok": True,
+        "simulation_challenge": challenge,
+        "simulation_type": simulation_type,
+        "metric_type": metric_type,
+    }
+
+
 def import_pandas():
     try:
         import pandas as pd  # type: ignore
@@ -445,7 +528,11 @@ def std(values: list[float]) -> float:
     return math.sqrt(sum((value - avg) ** 2 for value in values) / len(values))
 
 
-def calculate_nr_cls(metrics_dirs: list[Path]) -> dict[str, Any]:
+def calculate_closed_loop_score(metrics_dirs: list[Path]) -> dict[str, Any]:
+    scoring = infer_closed_loop_scoring(metrics_dirs)
+    if not scoring.get("ok"):
+        return scoring
+
     pd = import_pandas()
     all_metrics = NRCLS_MULTIPLE_METRICS + list(NRCLS_WEIGHTED_METRICS)
     scenario_metrics: dict[str, dict[str, float]] = {}
@@ -514,7 +601,9 @@ def calculate_nr_cls(metrics_dirs: list[Path]) -> dict[str, Any]:
 
     return {
         "ok": True,
-        "metric_type": "NR-CLS",
+        "metric_type": scoring["metric_type"],
+        "simulation_type": scoring["simulation_type"],
+        "simulation_challenge": scoring["simulation_challenge"],
         "score": mean(scores),
         "score_std": std(scores),
         "scenario_count": len(scores),
@@ -547,14 +636,28 @@ def calculate_interplan_score(metric_dir: Path) -> dict[str, Any]:
     scenario_rows = frame[frame["scenario"] != "final_score"]
     scenario_scores = [float(value) for value in scenario_rows["score"].dropna().tolist()]
     scenario_count = int(final.get("num_scenarios", len(scenario_scores)))
+    detail_metrics = [metric for metric, _, _ in CLS_DETAIL_COLUMNS + INTERPLAN_EXTRA_DETAIL_COLUMNS]
+    metric_means: dict[str, float] = {}
+    metric_counts: dict[str, int] = {}
+    for metric in detail_metrics:
+        if metric not in frame.columns:
+            continue
+        value = final.get(metric)
+        if pd.notna(value) and isinstance(value, (int, float)):
+            metric_means[metric] = float(value)
+            metric_counts[metric] = scenario_count
 
     return {
         "ok": True,
         "metric_type": "InterPlan",
+        "simulation_type": "reactive",
+        "simulation_challenge": "closed_loop_reactive_agents",
         "score": float(final["score"]),
         "score_std": std(scenario_scores),
         "scenario_count": scenario_count,
         "perfect_count": sum(1 for score in scenario_scores if score >= 1.0),
+        "metric_means": metric_means,
+        "metric_counts": metric_counts,
         "metric_file": str(metric_file),
     }
 
@@ -581,6 +684,8 @@ def summarize_one(
         "scenario_count": None,
         "perfect_count": None,
         "metric_type": None,
+        "simulation_type": None,
+        "simulation_challenge": None,
         "source": None,
         "metrics_dirs": [],
         "error": None,
@@ -609,7 +714,7 @@ def summarize_one(
             row["error"] = f"No metrics found for {exp_name}"
             return row
         try:
-            score = calculate_nr_cls(metrics_dirs)
+            score = calculate_closed_loop_score(metrics_dirs)
         except RuntimeError as exc:
             row["status"] = "found_no_score"
             row["error"] = str(exc)
@@ -628,6 +733,8 @@ def summarize_one(
             "scenario_count": score.get("scenario_count", row.get("scenario_count")),
             "perfect_count": score.get("perfect_count"),
             "metric_type": score.get("metric_type"),
+            "simulation_type": score.get("simulation_type"),
+            "simulation_challenge": score.get("simulation_challenge"),
         }
     )
     if include_detail:
@@ -635,7 +742,7 @@ def summarize_one(
         metric_counts = score.get("metric_counts", {})
         row["metric_means"] = metric_means
         row["metric_counts"] = metric_counts
-        for metric_name, key, _ in NRCLS_DETAIL_COLUMNS:
+        for metric_name, key, _ in CLS_DETAIL_COLUMNS:
             row[key] = metric_means.get(metric_name)
     return row
 
@@ -655,6 +762,7 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
         ("method_label", "Method"),
         ("status", "Status"),
         ("metric_type", "Metric"),
+        ("simulation_type", "Simulation"),
         ("scenario_count", "N"),
         ("score", "Score"),
         ("score_std", "Std"),
@@ -662,8 +770,8 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
         ("source", "Source"),
     ]
     if include_detail:
-        columns.extend((key, label) for _, key, label in NRCLS_DETAIL_COLUMNS)
-    detail_keys = {detail_key for _, detail_key, _ in NRCLS_DETAIL_COLUMNS}
+        columns.extend((key, label) for _, key, label in CLS_DETAIL_COLUMNS)
+    detail_keys = {detail_key for _, detail_key, _ in CLS_DETAIL_COLUMNS}
 
     rendered_rows = []
     for row in rows:
@@ -698,6 +806,8 @@ def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = F
         "experiment",
         "status",
         "metric_type",
+        "simulation_type",
+        "simulation_challenge",
         "scenario_count",
         "expected_scenarios",
         "score",
@@ -708,7 +818,7 @@ def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = F
         "metrics_dirs",
     ]
     if include_detail:
-        fields.extend(key for _, key, _ in NRCLS_DETAIL_COLUMNS)
+        fields.extend(key for _, key, _ in CLS_DETAIL_COLUMNS)
         fields.extend(["metric_means", "metric_counts"])
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8", newline="") as f:
@@ -755,7 +865,7 @@ def main() -> int:
     parser.add_argument(
         "--detail",
         action="store_true",
-        help="Include the eight NR-CLS component metric means in table/csv/json output.",
+        help="Include the eight closed-loop component metric means in table/csv/json output.",
     )
     parser.add_argument("--include-missing", action="store_true", help="Show rows with no result directory.")
     parser.add_argument("--strict", action="store_true", help="Exit non-zero if any selected row is missing or invalid.")
