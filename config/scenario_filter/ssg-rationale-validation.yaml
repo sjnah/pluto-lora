@@ -1,0 +1,37 @@
+_target_: nuplan.planning.scenario_builder.scenario_filter.ScenarioFilter
+_convert_: all
+scenario_types: null
+scenario_tokens:
+  - c2c649fcd5325b3d
+  - 63aa10eaed9f53c5
+  - 74839092cd465b9b
+  - a02975d344615af2
+  - 9ef2cc51be4c51ed
+  - 76c25802eadb5c0a
+  - 550a7ef8a0bf51bd
+  - 7769877f8e065b88
+  - a2a91f9c6817571b
+  - 87170f0068dc5a32
+  - 0bcc74a610a75684
+  - 0e5a63dd7a595e89
+  - 53ac18e4ecab530c
+  - f5abfaa3336f52b6
+  - 01ec9908a531542b
+  - 01ee7a316b2a575d
+  - c3f57dcacae056f3
+  - 065f461ad39e5ff6
+  - 340585540ef151c5
+  - 41427d3d4b465f07
+  - e5c42dd52e945126
+  - 576765977d705114
+  - 110de4e0cd815aab
+  - ecfb2f5a649b5501
+log_names: null
+map_names: null
+num_scenarios_per_type: null
+limit_total_scenarios: null
+timestamp_threshold_s: null
+ego_displacement_minimum_m: null
+expand_scenarios: false
+remove_invalid_goals: false
+shuffle: false

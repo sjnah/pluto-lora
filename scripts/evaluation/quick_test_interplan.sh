@@ -38,7 +38,12 @@ apply_cli_overrides() {
             INTERPLAN_FILTER=*|EXPERIMENT_SUFFIX=*|COLLECT_TEST=*|\
             RUN_ZERO_SHOT=*|RUN_RULE_BASED=*|RUN_LOSS_BASED=*|RUN_UNIFORM=*|RUN_RANDOM_BUCKET=*|RUN_LLM_CURRICULUM=*|RUN_MPOC=*|\
             LLM_CURRICULUM_VERSION=*|LLM_CURRICULUM_SLUG=*|LLM_CURRICULUM_EXP=*|\
-            UNIFORM_CURRICULUM_VERSION=*|UNIFORM_CURRICULUM_SLUG=*|UNIFORM_CURRICULUM_EXP=*)
+            UNIFORM_CURRICULUM_VERSION=*|UNIFORM_CURRICULUM_SLUG=*|UNIFORM_CURRICULUM_EXP=*|\
+            RULE_CURRICULUM_VERSION=*|RULE_CURRICULUM_SLUG=*|RULE_CURRICULUM_EXP=*|\
+            LOSS_CURRICULUM_VERSION=*|LOSS_CURRICULUM_SLUG=*|LOSS_CURRICULUM_EXP=*|\
+            RANDOM_BUCKET_CURRICULUM_VERSION=*|RANDOM_BUCKET_CURRICULUM_SLUG=*|RANDOM_BUCKET_CURRICULUM_EXP=*|\
+            MPOC_CURRICULUM_VERSION=*|MPOC_CURRICULUM_SLUG=*|MPOC_CURRICULUM_EXP=*|\
+            PERCENTILE_EHU_FINAL_PHASE=*)
                 export "$arg"
                 ;;
             interplan10|benchmark_scenarios)
@@ -84,6 +89,44 @@ LLM_CURRICULUM_EXP=${LLM_CURRICULUM_EXP:-curriculum_lora_llm_guided_${LLM_CURRIC
 UNIFORM_CURRICULUM_VERSION=${UNIFORM_CURRICULUM_VERSION:-v2.3.9}
 UNIFORM_CURRICULUM_SLUG=${UNIFORM_CURRICULUM_SLUG:-curriculum_uniform_${UNIFORM_CURRICULUM_VERSION}}
 UNIFORM_CURRICULUM_EXP=${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_${UNIFORM_CURRICULUM_VERSION}_stage3_uniform}
+
+PERCENTILE_EHU_FINAL_PHASE=${PERCENTILE_EHU_FINAL_PHASE:-phaseC_uniform_consolidation}
+
+RULE_CURRICULUM_VERSION=${RULE_CURRICULUM_VERSION:-}
+if [ -n "$RULE_CURRICULUM_VERSION" ]; then
+    RULE_CURRICULUM_SLUG=${RULE_CURRICULUM_SLUG:-curriculum_rule_percentile_ehu_${RULE_CURRICULUM_VERSION}}
+    RULE_CURRICULUM_EXP=${RULE_CURRICULUM_EXP:-curriculum_lora_rule_percentile_ehu_${RULE_CURRICULUM_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}
+else
+    RULE_CURRICULUM_SLUG=${RULE_CURRICULUM_SLUG:-rulebased}
+    RULE_CURRICULUM_EXP=${RULE_CURRICULUM_EXP:-curriculum_lora_rulebased_stage3_high}
+fi
+
+LOSS_CURRICULUM_VERSION=${LOSS_CURRICULUM_VERSION:-}
+if [ -n "$LOSS_CURRICULUM_VERSION" ]; then
+    LOSS_CURRICULUM_SLUG=${LOSS_CURRICULUM_SLUG:-curriculum_loss_percentile_ehu_${LOSS_CURRICULUM_VERSION}}
+    LOSS_CURRICULUM_EXP=${LOSS_CURRICULUM_EXP:-curriculum_lora_loss_percentile_ehu_${LOSS_CURRICULUM_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}
+else
+    LOSS_CURRICULUM_SLUG=${LOSS_CURRICULUM_SLUG:-lossbased}
+    LOSS_CURRICULUM_EXP=${LOSS_CURRICULUM_EXP:-curriculum_lora_lossrank_stage3_high}
+fi
+
+RANDOM_BUCKET_CURRICULUM_VERSION=${RANDOM_BUCKET_CURRICULUM_VERSION:-}
+if [ -n "$RANDOM_BUCKET_CURRICULUM_VERSION" ]; then
+    RANDOM_BUCKET_CURRICULUM_SLUG=${RANDOM_BUCKET_CURRICULUM_SLUG:-curriculum_randombucket_percentile_ehu_${RANDOM_BUCKET_CURRICULUM_VERSION}}
+    RANDOM_BUCKET_CURRICULUM_EXP=${RANDOM_BUCKET_CURRICULUM_EXP:-curriculum_lora_random_percentile_ehu_${RANDOM_BUCKET_CURRICULUM_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}
+else
+    RANDOM_BUCKET_CURRICULUM_SLUG=${RANDOM_BUCKET_CURRICULUM_SLUG:-curriculum_randombucket}
+    RANDOM_BUCKET_CURRICULUM_EXP=${RANDOM_BUCKET_CURRICULUM_EXP:-curriculum_lora_randombucket_stage3_high}
+fi
+
+MPOC_CURRICULUM_VERSION=${MPOC_CURRICULUM_VERSION:-}
+if [ -n "$MPOC_CURRICULUM_VERSION" ]; then
+    MPOC_CURRICULUM_SLUG=${MPOC_CURRICULUM_SLUG:-curriculum_mpoc_percentile_ehu_${MPOC_CURRICULUM_VERSION}}
+    MPOC_CURRICULUM_EXP=${MPOC_CURRICULUM_EXP:-curriculum_lora_mpoc_percentile_ehu_${MPOC_CURRICULUM_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}
+else
+    MPOC_CURRICULUM_SLUG=${MPOC_CURRICULUM_SLUG:-curriculum_mpoc}
+    MPOC_CURRICULUM_EXP=${MPOC_CURRICULUM_EXP:-curriculum_lora_mpoc_stage3_high}
+fi
 
 if [ "$INTERPLAN_FILTER" != "interplan10" ] && [ "$INTERPLAN_FILTER" != "benchmark_scenarios" ]; then
     echo "❌ Error: Invalid filter. Use 'interplan10' or 'benchmark_scenarios'"
@@ -273,12 +316,12 @@ run_enabled_interplan_models() {
     local experiment_suffix=$1
 
     is_enabled "$RUN_ZERO_SHOT" && run_model_interplan_simulation "Zero-shot" "zeroshot" "$ZERO_SHOT_CKPT" "$experiment_suffix"
-    is_enabled "$RUN_RULE_BASED" && run_model_interplan_simulation "Rule-based" "rulebased" "$RULE_BASED_CKPT" "$experiment_suffix"
-    is_enabled "$RUN_LOSS_BASED" && run_model_interplan_simulation "Loss-based" "lossbased" "$LOSS_BASED_CKPT" "$experiment_suffix"
+    is_enabled "$RUN_RULE_BASED" && run_model_interplan_simulation "Rule-based${RULE_CURRICULUM_VERSION:+ (${RULE_CURRICULUM_VERSION})}" "$RULE_CURRICULUM_SLUG" "$RULE_BASED_CKPT" "$experiment_suffix"
+    is_enabled "$RUN_LOSS_BASED" && run_model_interplan_simulation "Loss-based${LOSS_CURRICULUM_VERSION:+ (${LOSS_CURRICULUM_VERSION})}" "$LOSS_CURRICULUM_SLUG" "$LOSS_BASED_CKPT" "$experiment_suffix"
     is_enabled "$RUN_UNIFORM" && run_model_interplan_simulation "Uniform FT (${UNIFORM_CURRICULUM_VERSION})" "$UNIFORM_CURRICULUM_SLUG" "$UNIFORM_CKPT" "$experiment_suffix"
-    is_enabled "$RUN_RANDOM_BUCKET" && run_model_interplan_simulation "RandomBucket-FT" "curriculum_randombucket" "$RANDOM_BUCKET_CKPT" "$experiment_suffix"
+    is_enabled "$RUN_RANDOM_BUCKET" && run_model_interplan_simulation "RandomBucket-FT${RANDOM_BUCKET_CURRICULUM_VERSION:+ (${RANDOM_BUCKET_CURRICULUM_VERSION})}" "$RANDOM_BUCKET_CURRICULUM_SLUG" "$RANDOM_BUCKET_CKPT" "$experiment_suffix"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_interplan_simulation "LLM-guided curriculum (${LLM_CURRICULUM_VERSION})" "$LLM_CURRICULUM_SLUG" "$CURRICULUM_CKPT" "$experiment_suffix"
-    is_enabled "$RUN_MPOC" && run_model_interplan_simulation "MPOC curriculum" "curriculum_mpoc" "$MPOC_CKPT" "$experiment_suffix"
+    is_enabled "$RUN_MPOC" && run_model_interplan_simulation "MPOC curriculum${MPOC_CURRICULUM_VERSION:+ (${MPOC_CURRICULUM_VERSION})}" "$MPOC_CURRICULUM_SLUG" "$MPOC_CKPT" "$experiment_suffix"
 }
 
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
@@ -324,21 +367,21 @@ if is_enabled "$RUN_ZERO_SHOT"; then
     fi
 fi
 
-is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based" "curriculum_lora_rulebased_stage3_high"
-is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "curriculum_lora_lossrank_stage3_high"
+is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based" "$RULE_CURRICULUM_EXP"
+is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "$LOSS_CURRICULUM_EXP"
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform FT" "$UNIFORM_CURRICULUM_EXP"
-is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "curriculum_lora_randombucket_stage3_high"
+is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "$RANDOM_BUCKET_CURRICULUM_EXP"
 is_enabled "$RUN_LLM_CURRICULUM" && find_lora_checkpoint CURRICULUM_CKPT "LLM-guided curriculum" "$LLM_CURRICULUM_EXP"
-is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "curriculum_lora_mpoc_stage3_high"
+is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "$MPOC_CURRICULUM_EXP"
 
 echo "📍 Using checkpoints:"
 is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, no fine-tuning)"
-is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO + rule-based curriculum LoRA)"
-is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA)"
+is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO + rule-based curriculum LoRA, slug=${RULE_CURRICULUM_SLUG}, exp=${RULE_CURRICULUM_EXP})"
+is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA, slug=${LOSS_CURRICULUM_SLUG}, exp=${LOSS_CURRICULUM_EXP})"
 is_enabled "$RUN_UNIFORM" && echo "  Uniform FT:      $UNIFORM_CKPT (PLUTO + ${UNIFORM_CURRICULUM_VERSION} uniform FT LoRA, slug=${UNIFORM_CURRICULUM_SLUG})"
-is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA)"
+is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA, slug=${RANDOM_BUCKET_CURRICULUM_SLUG}, exp=${RANDOM_BUCKET_CURRICULUM_EXP})"
 is_enabled "$RUN_LLM_CURRICULUM" && echo "  LLM-guided:      $CURRICULUM_CKPT (PLUTO + ${LLM_CURRICULUM_VERSION} curriculum LoRA, slug=${LLM_CURRICULUM_SLUG})"
-is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT (PLUTO + MPOC curriculum LoRA)"
+is_enabled "$RUN_MPOC" && echo "  MPOC curriculum: $MPOC_CKPT (PLUTO + MPOC curriculum LoRA, slug=${MPOC_CURRICULUM_SLUG}, exp=${MPOC_CURRICULUM_EXP})"
 echo ""
 echo "📍 Using interPlan scenario filter: $INTERPLAN_FILTER"
 echo ""
@@ -393,12 +436,12 @@ echo "Collecting result summary..."
 
 COLLECT_METHOD_KEYS=()
 is_enabled "$RUN_ZERO_SHOT" && COLLECT_METHOD_KEYS+=("zeroshot")
-is_enabled "$RUN_RULE_BASED" && COLLECT_METHOD_KEYS+=("rulebased")
-is_enabled "$RUN_LOSS_BASED" && COLLECT_METHOD_KEYS+=("lossbased")
+is_enabled "$RUN_RULE_BASED" && COLLECT_METHOD_KEYS+=("$RULE_CURRICULUM_SLUG")
+is_enabled "$RUN_LOSS_BASED" && COLLECT_METHOD_KEYS+=("$LOSS_CURRICULUM_SLUG")
 is_enabled "$RUN_UNIFORM" && COLLECT_METHOD_KEYS+=("$UNIFORM_CURRICULUM_SLUG")
-is_enabled "$RUN_RANDOM_BUCKET" && COLLECT_METHOD_KEYS+=("curriculum_randombucket")
+is_enabled "$RUN_RANDOM_BUCKET" && COLLECT_METHOD_KEYS+=("$RANDOM_BUCKET_CURRICULUM_SLUG")
 is_enabled "$RUN_LLM_CURRICULUM" && COLLECT_METHOD_KEYS+=("$LLM_CURRICULUM_SLUG")
-is_enabled "$RUN_MPOC" && COLLECT_METHOD_KEYS+=("curriculum_mpoc")
+is_enabled "$RUN_MPOC" && COLLECT_METHOD_KEYS+=("$MPOC_CURRICULUM_SLUG")
 COLLECT_METHODS=$(IFS=,; echo "${COLLECT_METHOD_KEYS[*]}")
 
 python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \

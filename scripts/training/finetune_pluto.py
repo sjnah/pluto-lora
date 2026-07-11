@@ -304,6 +304,12 @@ def main(cfg: DictConfig) -> Optional[TrainingEngine]:
                 datamodule=engine.datamodule,
                 ckpt_path=cfg.checkpoint if "checkpoint" in cfg else None,
             )
+
+        checkpoint_dir = Path(cfg.output_dir) / "checkpoints"
+        checkpoint_dir.mkdir(exist_ok=True)
+        last_checkpoint_path = checkpoint_dir / "last.ckpt"
+        logger.info(f"Saving Lightning resume checkpoint to {last_checkpoint_path}...")
+        engine.trainer.save_checkpoint(str(last_checkpoint_path))
         
         # Save LoRA-only checkpoint
         lora_save_dir = Path(cfg.output_dir) / "lora_checkpoints"

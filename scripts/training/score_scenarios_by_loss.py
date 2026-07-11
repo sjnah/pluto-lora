@@ -17,15 +17,29 @@ import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+
+def disable_wandb_for_loss_scoring() -> None:
+    """Avoid importing broken optional wandb while running local loss scoring."""
+    if os.environ.get("PLUTO_TRAINING_ALLOW_WANDB") == "1":
+        return
+
+    os.environ.setdefault("WANDB_DISABLED", "true")
+    sys.modules.setdefault("wandb", None)
+
+
+disable_wandb_for_loss_scoring()
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = REPO_ROOT.parent
 NUPLAN_DEVKIT_ROOT = Path(os.environ.get("NUPLAN_DEVKIT_ROOT", WORKSPACE_ROOT / "nuplan-devkit"))
-if "NUPLAN_RUNTIME_ROOT" in os.environ:
-    NUPLAN_RUNTIME_ROOT = Path(os.environ["NUPLAN_RUNTIME_ROOT"])
-elif Path("/root/vessl-nuplan").exists():
-    NUPLAN_RUNTIME_ROOT = Path("/root/vessl-nuplan")
-else:
-    NUPLAN_RUNTIME_ROOT = NUPLAN_DEVKIT_ROOT / "nuplan"
+# if "NUPLAN_RUNTIME_ROOT" in os.environ:
+#     NUPLAN_RUNTIME_ROOT = Path(os.environ["NUPLAN_RUNTIME_ROOT"])
+# elif Path("/root/vessl-nuplan").exists():
+#     NUPLAN_RUNTIME_ROOT = Path("/root/vessl-nuplan")
+# else:
+#     NUPLAN_RUNTIME_ROOT = NUPLAN_DEVKIT_ROOT / "nuplan"
+NUPLAN_RUNTIME_ROOT = NUPLAN_DEVKIT_ROOT / "nuplan"
 
 
 def resolve_exp_root(runtime_root: Path) -> Path:

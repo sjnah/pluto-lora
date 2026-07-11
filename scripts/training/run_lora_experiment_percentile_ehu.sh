@@ -36,8 +36,8 @@ WEIGHT_DECAY=0.05
 # The previous common curriculum shape used 12 cumulative epochs. Integer
 # epochs cannot represent 20/40/40 exactly, so the default keeps the same total
 # epoch/update budget with the closest 2/5/5 split.
-EPOCHS_PHASE_A="${EPOCHS_PHASE_A:-2}"
-EPOCHS_PHASE_B="${EPOCHS_PHASE_B:-7}"
+EPOCHS_PHASE_A="${EPOCHS_PHASE_A:-3}"
+EPOCHS_PHASE_B="${EPOCHS_PHASE_B:-9}"
 EPOCHS_PHASE_C="${EPOCHS_PHASE_C:-12}"
 WARMUP_STEPS=100
 

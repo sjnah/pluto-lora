@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,26 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def is_dynamic_versioned_method(method: str) -> bool:
+    return (
+        re.fullmatch(r"curriculum_llm_guided_v[0-9][A-Za-z0-9._-]*", method) is not None
+        or re.fullmatch(r"curriculum_uniform_v[0-9][A-Za-z0-9._-]*", method) is not None
+        or re.fullmatch(
+            r"curriculum_(rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_v[0-9][A-Za-z0-9._-]*",
+            method,
+        )
+        is not None
+    )
+
+
+def experiment_prefix_for_method(method: str) -> str:
+    if method in METHOD_EXPERIMENT_PREFIXES:
+        return METHOD_EXPERIMENT_PREFIXES[method]
+    if is_dynamic_versioned_method(method):
+        return f"quick_test_{method}"
+    raise KeyError(method)
+
+
 def subset_one_experiment(
     exp_root: Path,
     records_dir: Path,
@@ -90,7 +111,7 @@ def subset_one_experiment(
     tokens: list[str],
     label: str,
 ) -> dict[str, Any]:
-    prefix = METHOD_EXPERIMENT_PREFIXES[method]
+    prefix = experiment_prefix_for_method(method)
     source_exp = f"{prefix}_{source_suffix}"
     dest_exp = f"{prefix}_{dest_suffix}"
     direct_source_metrics = exp_root / source_exp / "metrics"
@@ -185,7 +206,7 @@ def main() -> int:
     subset_keys = parse_csv_arg(args.subsets)
     method_keys = parse_csv_arg(args.methods)
     unknown_subsets = sorted(set(subset_keys).difference(SUBSETS))
-    unknown_methods = sorted(set(method_keys).difference(METHOD_EXPERIMENT_PREFIXES))
+    unknown_methods = sorted(method for method in set(method_keys) if not is_dynamic_versioned_method(method) and method not in METHOD_EXPERIMENT_PREFIXES)
     if unknown_subsets:
         raise SystemExit(f"Unknown subsets: {', '.join(unknown_subsets)}")
     if unknown_methods:

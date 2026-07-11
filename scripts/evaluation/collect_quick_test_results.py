@@ -213,6 +213,25 @@ def uniform_label(method_key: str) -> str:
     return f"Uniform FT {version}"
 
 
+def percentile_ehu_label(method_key: str) -> str:
+    match = re.fullmatch(
+        r"curriculum_(rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_(v[0-9][A-Za-z0-9._-]*)",
+        method_key,
+    )
+    if match is None:
+        return method_key
+    method, version = match.groups()
+    labels = {
+        "rule": "Rule-based percentile-EHU",
+        "loss": "Loss-based percentile-EHU",
+        "randombucket": "RandomBucket percentile-EHU",
+        "random": "RandomBucket percentile-EHU",
+        "mpoc": "MPOC percentile-EHU",
+        "llm": "LLM-guided percentile-EHU",
+    }
+    return f"{labels[method]} {version}"
+
+
 def is_llm_guided_version_method(method_key: str) -> bool:
     return re.fullmatch(r"curriculum_llm_guided_v[0-9][A-Za-z0-9._-]*", method_key) is not None
 
@@ -221,8 +240,22 @@ def is_uniform_version_method(method_key: str) -> bool:
     return re.fullmatch(r"curriculum_uniform_v[0-9][A-Za-z0-9._-]*", method_key) is not None
 
 
+def is_percentile_ehu_version_method(method_key: str) -> bool:
+    return (
+        re.fullmatch(
+            r"curriculum_(rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_v[0-9][A-Za-z0-9._-]*",
+            method_key,
+        )
+        is not None
+    )
+
+
 def is_auto_discovered_version_method(method_key: str) -> bool:
-    return is_llm_guided_version_method(method_key) or is_uniform_version_method(method_key)
+    return (
+        is_llm_guided_version_method(method_key)
+        or is_uniform_version_method(method_key)
+        or is_percentile_ehu_version_method(method_key)
+    )
 
 
 def method_spec_for_key(method_key: str) -> MethodSpec | None:
@@ -233,6 +266,8 @@ def method_spec_for_key(method_key: str) -> MethodSpec | None:
         return MethodSpec(method_key, llm_guided_label(method_key))
     if is_uniform_version_method(method_key):
         return MethodSpec(method_key, uniform_label(method_key))
+    if is_percentile_ehu_version_method(method_key):
+        return MethodSpec(method_key, percentile_ehu_label(method_key))
     return None
 
 
@@ -852,7 +887,8 @@ def main() -> int:
             "Comma-separated methods or all. Methods: zeroshot, rulebased, lossbased, "
             "curriculum_uniform, curriculum_randombucket, curriculum_llm_guided_v2, "
             "curriculum_uniform_v*, curriculum_llm_guided_v*, curriculum_llmbased, "
-            "curriculum_mpoc. Versioned Uniform/LLM-guided methods present in result "
+            "curriculum_mpoc, curriculum_{rule,loss,randombucket,mpoc,llm}_percentile_ehu_v*. "
+            "Versioned Uniform/LLM-guided/percentile-EHU methods present in result "
             "directories are auto-discovered for all."
         ),
     )

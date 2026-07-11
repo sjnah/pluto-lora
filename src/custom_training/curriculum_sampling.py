@@ -275,6 +275,8 @@ def split_scores_into_terciles(
 def validate_master_score_coverage(
     master_tokens: Iterable[str],
     score_rows: Sequence[Tuple[str, float]],
+    *,
+    allow_extra_scores: bool = False,
 ) -> Dict[str, object]:
     """Validate exact score coverage against a master scenario universe."""
     master = [str(token) for token in master_tokens]
@@ -308,7 +310,7 @@ def validate_master_score_coverage(
         "duplicate_scores": duplicate_scores,
         "invalid_scores": invalid_scores,
     }
-    if missing_scores or extra_scores or duplicate_scores or invalid_scores:
+    if missing_scores or duplicate_scores or invalid_scores or (extra_scores and not allow_extra_scores):
         raise ValueError(json.dumps(report, indent=2, sort_keys=True))
     return report
 

@@ -18,6 +18,12 @@ RUN_PLUTO="${RUN_PLUTO:-true}"
 RUN_IDM="${RUN_IDM:-true}"
 DISABLE_SIMULATION_LOG="${DISABLE_SIMULATION_LOG:-true}"
 QUIET_SIMULATION="${QUIET_SIMULATION:-false}"
+SIMULATION_WORKER="${SIMULATION_WORKER:-ray_distributed}"
+SIMULATION_WORKER_THREADS="${SIMULATION_WORKER_THREADS:-}"
+SIMULATION_WORKER_MAX_WORKERS="${SIMULATION_WORKER_MAX_WORKERS:-}"
+SIMULATION_NUM_GPUS="${SIMULATION_NUM_GPUS:-0}"
+SIMULATION_NUM_CPUS="${SIMULATION_NUM_CPUS:-1}"
+SIMULATION_RAY_LOG_TO_DRIVER="${SIMULATION_RAY_LOG_TO_DRIVER:-true}"
 
 # Optional: set SCENARIO_LIMIT for a smoke run before launching the full train pool.
 SCENARIO_LIMIT="${SCENARIO_LIMIT:-}"
@@ -31,7 +37,19 @@ is_enabled() {
 
 build_common_args() {
     local filter_name="$1"
-    local args=(--filter "$filter_name" --batch-size "$BATCH_SIZE")
+    local args=(
+        --filter "$filter_name"
+        --batch-size "$BATCH_SIZE"
+        --worker "$SIMULATION_WORKER"
+        --num-gpus "$SIMULATION_NUM_GPUS"
+        --num-cpus "$SIMULATION_NUM_CPUS"
+    )
+    if [ "$SIMULATION_WORKER" = "ray_distributed" ]; then
+        [ -n "$SIMULATION_WORKER_THREADS" ] && args+=(--worker-threads "$SIMULATION_WORKER_THREADS")
+        [ -n "$SIMULATION_RAY_LOG_TO_DRIVER" ] && args+=(--ray-log-to-driver "$SIMULATION_RAY_LOG_TO_DRIVER")
+    elif [ "$SIMULATION_WORKER" = "single_machine_thread_pool" ]; then
+        [ -n "$SIMULATION_WORKER_MAX_WORKERS" ] && args+=(--worker-max-workers "$SIMULATION_WORKER_MAX_WORKERS")
+    fi
     if [ -n "$SCENARIO_LIMIT" ]; then
         args+=(--limit "$SCENARIO_LIMIT")
     fi
@@ -61,6 +79,9 @@ echo "PLUTO experiment:  $PLUTO_EXPERIMENT"
 echo "IDM experiment:    $IDM_EXPERIMENT"
 echo "Simulation logs:   $DISABLE_SIMULATION_LOG"
 echo "Quiet simulation:  $QUIET_SIMULATION"
+echo "Worker:            $SIMULATION_WORKER"
+echo "Worker threads:    ${SIMULATION_WORKER_THREADS:-auto}"
+echo "Per-sim CPU/GPU:   ${SIMULATION_NUM_CPUS}/${SIMULATION_NUM_GPUS}"
 if [ -n "$SCENARIO_LIMIT" ]; then
     echo "Scenario limit:    $SCENARIO_LIMIT"
 fi
