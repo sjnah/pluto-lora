@@ -61,6 +61,21 @@ BATCH_SIZE="$CFG_BATCH_SIZE"
 ACCUMULATE_GRAD_BATCHES="$CFG_ACCUMULATE_GRAD_BATCHES"
 NUM_SANITY_VAL_STEPS="$CFG_NUM_SANITY_VAL_STEPS"
 
+FEATURE_CACHE_NAME="${FEATURE_CACHE_NAME:-}"
+FEATURE_CACHE_ROOT="${FEATURE_CACHE_ROOT:-${REPO_ROOT}/artifacts/feature_cache}"
+FEATURE_CACHE_PATH=""
+if [ -n "$FEATURE_CACHE_NAME" ]; then
+    if ! [[ "$FEATURE_CACHE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+        echo "Error: invalid FEATURE_CACHE_NAME: $FEATURE_CACHE_NAME" >&2
+        exit 1
+    fi
+    case "$FEATURE_CACHE_ROOT" in
+        /*) ;;
+        *) FEATURE_CACHE_ROOT="${REPO_ROOT}/${FEATURE_CACHE_ROOT}" ;;
+    esac
+    FEATURE_CACHE_PATH="${FEATURE_CACHE_ROOT}/${FEATURE_CACHE_NAME}"
+fi
+
 PHASE_A_NAME="$CFG_PHASE_A_NAME"
 PHASE_B_NAME="$CFG_PHASE_B_NAME"
 PHASE_C_NAME="$CFG_PHASE_C_NAME"
@@ -212,6 +227,11 @@ run_lora_train() {
     local require_protocol_match="$7"
     shift 7
 
+    local cache_overrides=()
+    if [ -n "$FEATURE_CACHE_PATH" ]; then
+        cache_overrides+=("cache.cache_path=$FEATURE_CACHE_PATH")
+    fi
+
     python scripts/training/finetune_pluto.py \
         --config-name training/train_pluto_lora \
         experiment="$experiment_name" \
@@ -244,6 +264,7 @@ run_lora_train() {
         lightning.trainer.params.num_sanity_val_steps="$NUM_SANITY_VAL_STEPS" \
         wandb.name="$experiment_name" \
         seed="$TRAINING_SEED" \
+        "${cache_overrides[@]}" \
         "$@"
 }
 
@@ -328,6 +349,11 @@ main() {
     echo "Cumulative epochs: $EPOCHS_PHASE_A/$EPOCHS_PHASE_B/$EPOCHS_PHASE_C"
     echo "A->B Adam reset: $RESET_OPTIMIZER_MOMENTS_AT_PHASE_B; B->C reset: false"
     echo "Seed: training=$TRAINING_SEED sampler=$SAMPLER_SEED"
+    if [ -n "$FEATURE_CACHE_PATH" ]; then
+        echo "Feature cache: $FEATURE_CACHE_PATH"
+    else
+        echo "Feature cache: disabled"
+    fi
     echo "Experiment base: $CURRICULUM_BASE_EXP"
     echo "Resolved snapshot: $PROTOCOL_SNAPSHOT_PATH"
     echo "============================================================"

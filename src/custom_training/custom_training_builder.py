@@ -64,6 +64,7 @@ def update_config_for_training(cfg: DictConfig) -> None:
                 rmtree(cfg.cache.cache_path)
 
             Path(cfg.cache.cache_path).mkdir(parents=True, exist_ok=True)
+        logger.info("Feature cache enabled: %s", cfg.cache.cache_path)
 
     if cfg.lightning.trainer.overfitting.enable:
         cfg.data_loader.params.num_workers = 0

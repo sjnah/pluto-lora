@@ -209,6 +209,9 @@ def resolve_suite(suite_path: str) -> dict[str, Any]:
         "CFG_SUITE_TRAINING_PROTOCOL": str(protocol_path),
         "CFG_SUITE_SEED_START": int(seeds["start"]),
         "CFG_SUITE_SEED_END": int(seeds["end"]),
+        "CFG_SUITE_FEATURE_CACHE_NAME": require_id(
+            runtime.get("feature_cache_name"), "runtime.feature_cache_name"
+        ),
         "CFG_SUITE_TYPE_ROUTING_MODE": str(runtime["type_routing_mode"]),
         "CFG_SUITE_CONTINUE_ON_FAILURE": bool(runtime["continue_on_failure"]),
         "CFG_SUITE_DISABLE_SIMULATION_LOG": bool(

@@ -23,7 +23,7 @@ methods:
 
 seeds:
   start: 1
-  end: 1
+  end: 3
 
 evaluation:
   val14: false
@@ -34,6 +34,9 @@ evaluation:
   interplan_benchmark: false
 
 runtime:
+  # Shared by every stage, epoch, method, and seed in this suite. Bump the
+  # suffix whenever the PLUTO feature-builder/serialization contract changes.
+  feature_cache_name: flat_lr_comparison_v1_pluto_feature_v1
   type_routing_mode: "off"
   continue_on_failure: false
   disable_simulation_log: true

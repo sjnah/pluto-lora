@@ -43,6 +43,7 @@ export UNIFORM_VERSION="${UNIFORM_VERSION:-$CFG_SUITE_UNIFORM_VERSION}"
 export CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-$CFG_SUITE_CONTINUE_ON_FAILURE}"
 export DRY_RUN="${DRY_RUN:-false}"
 export TYPE_ROUTING_MODE="${TYPE_ROUTING_MODE:-$CFG_SUITE_TYPE_ROUTING_MODE}"
+export FEATURE_CACHE_NAME="${FEATURE_CACHE_NAME:-$CFG_SUITE_FEATURE_CACHE_NAME}"
 export RUN_LLM_TYPE_ROUTING_COMPARISON="${RUN_LLM_TYPE_ROUTING_COMPARISON:-false}"
 export LLM_TYPE_ROUTING_OFF_BASE_EXP="${LLM_TYPE_ROUTING_OFF_BASE_EXP:-curriculum_lora_llm_percentile_ehu_${LLM_VERSION}_${TRAINING_PROTOCOL_ID}_type_off}"
 export LLM_TYPE_ROUTING_ON_BASE_EXP="${LLM_TYPE_ROUTING_ON_BASE_EXP:-curriculum_lora_llm_percentile_ehu_${LLM_VERSION}_${TRAINING_PROTOCOL_ID}_type_on}"
@@ -90,6 +91,7 @@ run_percentile_ehu_method() {
         echo "=============================================="
         echo "DRY_RUN: METHOD=${method} METHOD_LABEL=${label} CURRICULUM_VERSION=${version} TRAINING_PROTOCOL_CONFIG=${TRAINING_PROTOCOL_CONFIG} bash ${LORA_EXPERIMENT_SCRIPT}"
         echo "         TYPE_ROUTING_MODE=${type_routing_mode}${sampler_mode_override:+ SAMPLER_MODE=${sampler_mode_override}}"
+        echo "         FEATURE_CACHE_NAME=${FEATURE_CACHE_NAME}"
         [ -n "$base_exp" ] && echo "         CURRICULUM_BASE_EXP=${base_exp}"
         [ -n "$filter_prefix" ] && echo "         FILTER_PREFIX=${filter_prefix}"
         return 0
@@ -136,6 +138,7 @@ run_uniform_method() {
         echo "Uniform FT (${UNIFORM_VERSION})"
         echo "=============================================="
         echo "DRY_RUN: METHOD=uniform CURRICULUM_VERSION=${UNIFORM_VERSION} TRAINING_PROTOCOL_CONFIG=${TRAINING_PROTOCOL_CONFIG} bash ${LORA_EXPERIMENT_SCRIPT}"
+        echo "         FEATURE_CACHE_NAME=${FEATURE_CACHE_NAME}"
         [ -n "${UNIFORM_CURRICULUM_BASE_EXP:-}" ] && echo "         CURRICULUM_BASE_EXP=${UNIFORM_CURRICULUM_BASE_EXP}"
         return 0
     fi
@@ -173,6 +176,7 @@ fi
 echo "PLUTO LoRA experiment suite"
 echo "Suite: ${CFG_SUITE_ID} (${CFG_SUITE_PATH})"
 echo "Training protocol: ${TRAINING_PROTOCOL_ID} (${TRAINING_PROTOCOL_CONFIG})"
+echo "Feature cache: ${FEATURE_CACHE_NAME}"
 echo "Enabled methods:"
 is_enabled "$RUN_LLM" && echo "  LLM:           ${LLM_VERSION}"
 is_enabled "$RUN_RULE" && echo "  Rule:          ${RULE_VERSION}"
