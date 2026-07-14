@@ -1,0 +1,40 @@
+suite_id: flat_lr_comparison_v1
+training_protocol: config/training_protocol/flat_area_matched_v1.yaml
+
+methods:
+  llm:
+    enabled: false
+    artifact_version: v5.0.4.0.15
+  random:
+    enabled: true
+    artifact_version: v1.16
+  uniform:
+    enabled: true
+    artifact_version: v1.16
+  rule:
+    enabled: false
+    artifact_version: v3.12
+  loss:
+    enabled: false
+    artifact_version: v1.12
+  mpoc:
+    enabled: false
+    artifact_version: v1.12
+
+seeds:
+  start: 1
+  end: 1
+
+evaluation:
+  val14: false
+  val14_fast: false
+  test14_hard: false
+  test14_hard_fast: true
+  interplan10: true
+  interplan_benchmark: false
+
+runtime:
+  type_routing_mode: "off"
+  continue_on_failure: false
+  disable_simulation_log: true
+  skip_training_if_checkpoint_exists: false

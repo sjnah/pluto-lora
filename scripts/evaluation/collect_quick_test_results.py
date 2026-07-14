@@ -153,13 +153,13 @@ METHOD_SPECS = {
 
 DEFAULT_METHODS = [
     "zeroshot",
-    "rulebased",
-    "lossbased",
     "curriculum_uniform",
     "curriculum_randombucket",
+    "rulebased",
+    "lossbased",
+    "curriculum_mpoc",
     "curriculum_llm_guided_v2",
     "curriculum_llmbased",
-    "curriculum_mpoc",
 ]
 
 NRCLS_MULTIPLE_METRICS = [
@@ -221,6 +221,13 @@ def percentile_ehu_label(method_key: str) -> str:
     if match is None:
         return method_key
     method, version = match.groups()
+    variant_label = ""
+    if version.endswith("_type_off"):
+        version = version[: -len("_type_off")]
+        variant_label = " (type routing off)"
+    elif version.endswith("_type_on"):
+        version = version[: -len("_type_on")]
+        variant_label = " (type routing on)"
     labels = {
         "rule": "Rule-based percentile-EHU",
         "loss": "Loss-based percentile-EHU",
@@ -229,7 +236,7 @@ def percentile_ehu_label(method_key: str) -> str:
         "mpoc": "MPOC percentile-EHU",
         "llm": "LLM-guided percentile-EHU",
     }
-    return f"{labels[method]} {version}"
+    return f"{labels[method]} {version}{variant_label}"
 
 
 def is_llm_guided_version_method(method_key: str) -> bool:
@@ -256,6 +263,36 @@ def is_auto_discovered_version_method(method_key: str) -> bool:
         or is_uniform_version_method(method_key)
         or is_percentile_ehu_version_method(method_key)
     )
+
+
+def method_sort_key(method_key: str) -> tuple[int, int, str]:
+    """Keep quick-test summaries in the agreed curriculum comparison order."""
+    exact_order = {
+        "zeroshot": (0, 0),
+        "curriculum_uniform": (1, 0),
+        "curriculum_randombucket": (2, 0),
+        "rulebased": (3, 0),
+        "lossbased": (4, 0),
+        "curriculum_mpoc": (5, 0),
+        "curriculum_llm_guided_v2": (6, 0),
+        "curriculum_llmbased": (6, 2),
+    }
+    if method_key in exact_order:
+        group, variant = exact_order[method_key]
+        return group, variant, method_key
+    if is_uniform_version_method(method_key):
+        return 1, 1, method_key
+    if "randombucket" in method_key or "_random_" in method_key:
+        return 2, 1, method_key
+    if "rule" in method_key:
+        return 3, 1, method_key
+    if "loss" in method_key:
+        return 4, 1, method_key
+    if "mpoc" in method_key:
+        return 5, 1, method_key
+    if is_llm_guided_version_method(method_key) or "llm" in method_key:
+        return 6, 1, method_key
+    return 99, 0, method_key
 
 
 def method_spec_for_key(method_key: str) -> MethodSpec | None:
@@ -344,7 +381,11 @@ def expand_methods(
                 valid = ", ".join(sorted(METHOD_SPECS))
                 raise SystemExit(f"Unknown method '{token}'. Valid values: {valid}")
             keys.append(normalized)
-    return [spec for key in keys if (spec := method_spec_for_key(key)) is not None]
+    return [
+        spec
+        for key in sorted(dict.fromkeys(keys), key=method_sort_key)
+        if (spec := method_spec_for_key(key)) is not None
+    ]
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -563,6 +604,14 @@ def std(values: list[float]) -> float:
     return math.sqrt(sum((value - avg) ** 2 for value in values) / len(values))
 
 
+def sample_std(values: list[float]) -> float:
+    """Return sample standard deviation across independent seeded runs."""
+    if len(values) <= 1:
+        return 0.0
+    avg = mean(values)
+    return math.sqrt(sum((value - avg) ** 2 for value in values) / (len(values) - 1))
+
+
 def calculate_closed_loop_score(metrics_dirs: list[Path]) -> dict[str, Any]:
     scoring = infer_closed_loop_scoring(metrics_dirs)
     if not scoring.get("ok"):
@@ -716,6 +765,10 @@ def summarize_one(
         "status": "missing",
         "score": None,
         "score_std": None,
+        "seed_score_std": None,
+        "seed_count": None,
+        "seeds": [],
+        "seed_runs": [],
         "scenario_count": None,
         "perfect_count": None,
         "metric_type": None,
@@ -782,6 +835,95 @@ def summarize_one(
     return row
 
 
+SEED_SUFFIX_RE = re.compile(r"^(?P<base>.+)_seed(?P<seed>[0-9]+)$")
+
+
+def aggregate_seeded_rows(rows: list[dict[str, Any]], include_detail: bool = False) -> list[dict[str, Any]]:
+    """Collapse comparable `_seedN` runs into one mean +/- sample-std row."""
+    grouped: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = {}
+    passthrough: list[dict[str, Any]] = []
+
+    for row in rows:
+        match = SEED_SUFFIX_RE.fullmatch(str(row.get("method", "")))
+        if match is None:
+            passthrough.append(row)
+            continue
+        key = (str(row.get("test")), match.group("base"))
+        grouped.setdefault(key, []).append((int(match.group("seed")), row))
+
+    aggregated: list[dict[str, Any]] = []
+    for (test_key, base_method), seeded_rows in grouped.items():
+        seeded_rows.sort(key=lambda item: item[0])
+        source_rows = [row for _, row in seeded_rows]
+        comparable_fields = ("metric_type", "simulation_type", "simulation_challenge")
+        comparable = all(
+            len({row.get(field) for row in source_rows}) == 1
+            for field in comparable_fields
+        )
+        valid = all(row.get("status") == "ok" and row.get("score") is not None for row in source_rows)
+        if len(source_rows) < 2 or not comparable or not valid:
+            passthrough.extend(source_rows)
+            continue
+
+        seeds = [seed for seed, _ in seeded_rows]
+        scores = [float(row["score"]) for row in source_rows]
+        base_spec = method_spec_for_key(base_method)
+        scenario_counts = {row.get("scenario_count") for row in source_rows}
+        expected_counts = {row.get("expected_scenarios") for row in source_rows}
+        perfect_counts = [
+            float(row["perfect_count"])
+            for row in source_rows
+            if row.get("perfect_count") is not None
+        ]
+        within_run_stds = [
+            float(row["score_std"])
+            for row in source_rows
+            if row.get("score_std") is not None
+        ]
+
+        aggregate = dict(source_rows[0])
+        aggregate.update(
+            {
+                "test": test_key,
+                "method": base_method,
+                "method_label": base_spec.label if base_spec else base_method,
+                "experiment": ";".join(str(row.get("experiment", "")) for row in source_rows),
+                "score": mean(scores),
+                "seed_score_std": sample_std(scores),
+                "seed_count": len(seeds),
+                "seeds": seeds,
+                "score_std": mean(within_run_stds) if within_run_stds else None,
+                "scenario_count": scenario_counts.pop() if len(scenario_counts) == 1 else None,
+                "expected_scenarios": expected_counts.pop() if len(expected_counts) == 1 else None,
+                "perfect_count": mean(perfect_counts) if len(perfect_counts) == len(source_rows) else None,
+                "source": "seed_aggregate",
+                "metrics_dirs": [path for row in source_rows for path in row.get("metrics_dirs", [])],
+                "seed_runs": source_rows,
+                "error": None,
+            }
+        )
+
+        if include_detail:
+            metric_names = set.intersection(
+                *(set(row.get("metric_means", {})) for row in source_rows)
+            ) if source_rows else set()
+            metric_means = {
+                metric: mean([float(row["metric_means"][metric]) for row in source_rows])
+                for metric in sorted(metric_names)
+            }
+            aggregate["metric_means"] = metric_means
+            for metric_name, key, _ in CLS_DETAIL_COLUMNS:
+                aggregate[key] = metric_means.get(metric_name)
+        aggregated.append(aggregate)
+
+    combined = passthrough + aggregated
+    test_order = {key: index for index, key in enumerate(TEST_SPECS)}
+    return sorted(
+        combined,
+        key=lambda row: (test_order.get(str(row.get("test")), 999), method_sort_key(str(row.get("method")))),
+    )
+
+
 def format_float(value: Any) -> str:
     if value is None:
         return "-"
@@ -791,6 +933,21 @@ def format_float(value: Any) -> str:
         return str(value)
 
 
+def format_score(row: dict[str, Any]) -> str:
+    score = format_float(row.get("score"))
+    seed_std = row.get("seed_score_std")
+    if seed_std is None:
+        return score
+    return f"{score} +/- {format_float(seed_std)}"
+
+
+def style_score(value: str) -> str:
+    """Highlight a displayed score without changing its underlying value."""
+    if not sys.stdout.isatty() or value == "-":
+        return value
+    return f"\033[1;34m{value}\033[0m"
+
+
 def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> None:
     columns = [
         ("test_label", "Test"),
@@ -798,9 +955,10 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
         ("status", "Status"),
         ("metric_type", "Metric"),
         ("simulation_type", "Simulation"),
+        ("seed_count", "Seeds"),
         ("scenario_count", "N"),
         ("score", "Score"),
-        ("score_std", "Std"),
+        ("score_std", "Within-run Std"),
         ("perfect_count", "Perfect"),
         ("source", "Source"),
     ]
@@ -813,7 +971,9 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
         rendered = {}
         for key, _ in columns:
             value = row.get(key)
-            if key in {"score", "score_std"} or key in detail_keys:
+            if key == "score":
+                rendered[key] = format_score(row)
+            elif key == "score_std" or key in detail_keys:
                 rendered[key] = format_float(value)
             elif value is None:
                 rendered[key] = "-"
@@ -825,11 +985,19 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
         key: max(len(title), *(len(row[key]) for row in rendered_rows)) if rendered_rows else len(title)
         for key, title in columns
     }
-    header = "  ".join(title.ljust(widths[key]) for key, title in columns)
+    header = "  ".join(
+        style_score(title.ljust(widths[key])) if key == "score" else title.ljust(widths[key])
+        for key, title in columns
+    )
     print(header)
     print("  ".join("-" * widths[key] for key, _ in columns))
     for row in rendered_rows:
-        print("  ".join(row[key].ljust(widths[key]) for key, _ in columns))
+        print(
+            "  ".join(
+                style_score(row[key].ljust(widths[key])) if key == "score" else row[key].ljust(widths[key])
+                for key, _ in columns
+            )
+        )
 
 
 def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = False) -> None:
@@ -847,6 +1015,9 @@ def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = F
         "expected_scenarios",
         "score",
         "score_std",
+        "seed_score_std",
+        "seed_count",
+        "seeds",
         "perfect_count",
         "source",
         "error",
@@ -862,6 +1033,7 @@ def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = F
         for row in rows:
             flat = dict(row)
             flat["metrics_dirs"] = ";".join(row.get("metrics_dirs", []))
+            flat["seeds"] = ";".join(str(seed) for seed in row.get("seeds", []))
             if include_detail:
                 flat["metric_means"] = json.dumps(row.get("metric_means", {}), sort_keys=True)
                 flat["metric_counts"] = json.dumps(row.get("metric_counts", {}), sort_keys=True)
@@ -921,6 +1093,8 @@ def main() -> int:
             row = summarize_one(test, method, args.exp_root, args.records_dir, args.manifest_dir, args.detail)
             if args.include_missing or row["status"] != "missing":
                 rows.append(row)
+
+    rows = aggregate_seeded_rows(rows, args.detail)
 
     if args.format == "json":
         text = json.dumps(rows, indent=2, sort_keys=True)

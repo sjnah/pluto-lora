@@ -229,6 +229,18 @@ def build_lora_training_engine(
         policy_head_lr=lora_config.get("policy_head_lr", cfg.lr * 0.5),
         trainable_modules=lora_config.get("trainable_modules", None),
         is_curriculum_stage=is_curriculum_stage,
+        reset_optimizer_moments_on_resume=lora_config.get(
+            "reset_optimizer_moments_on_resume", False
+        ),
+        scheduler_horizon_epochs=lora_config.get("scheduler_horizon_epochs", None),
+        scheduler_type=lora_config.get("scheduler_type", "warmup_cosine"),
+        training_protocol_id=lora_config.get("training_protocol_id", ""),
+        training_protocol_sha256=lora_config.get("training_protocol_sha256", ""),
+        curriculum_method_id=lora_config.get("curriculum_method_id", ""),
+        curriculum_method_sha256=lora_config.get("curriculum_method_sha256", ""),
+        require_protocol_match_on_resume=lora_config.get(
+            "require_protocol_match_on_resume", False
+        ),
         ultra_minimal=lora_config.get("ultra_minimal", False),
     )
     

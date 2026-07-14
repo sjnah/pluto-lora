@@ -61,19 +61,26 @@ export LOSS_VERSION="${LOSS_VERSION:-${LOSS_CURRICULUM_VERSION:-v4.3.13}}"
 export RANDOM_BUCKET_VERSION="${RANDOM_BUCKET_VERSION:-${RANDOM_BUCKET_CURRICULUM_VERSION:-v4.3.13}}"
 export MPOC_VERSION="${MPOC_VERSION:-${MPOC_CURRICULUM_VERSION:-v4.3.13}}"
 export UNIFORM_VERSION="${UNIFORM_VERSION:-${UNIFORM_CURRICULUM_VERSION:-v4.3.13}}"
+TRAINING_PROTOCOL_ID="${TRAINING_PROTOCOL_ID:-}"
+PROTOCOL_NAME_PART=""
+PROTOCOL_SLUG_PART=""
+if [ -n "$TRAINING_PROTOCOL_ID" ]; then
+    PROTOCOL_NAME_PART="_${TRAINING_PROTOCOL_ID}"
+    PROTOCOL_SLUG_PART="_${TRAINING_PROTOCOL_ID}"
+fi
 
 export RULE_CURRICULUM_VERSION="${RULE_CURRICULUM_VERSION:-$RULE_VERSION}"
 export LOSS_CURRICULUM_VERSION="${LOSS_CURRICULUM_VERSION:-$LOSS_VERSION}"
 export RANDOM_BUCKET_CURRICULUM_VERSION="${RANDOM_BUCKET_CURRICULUM_VERSION:-$RANDOM_BUCKET_VERSION}"
 export MPOC_CURRICULUM_VERSION="${MPOC_CURRICULUM_VERSION:-$MPOC_VERSION}"
-export RULE_CURRICULUM_SLUG="${RULE_CURRICULUM_SLUG:-curriculum_rule_percentile_ehu_${RULE_VERSION}}"
-export RULE_CURRICULUM_EXP="${RULE_CURRICULUM_EXP:-curriculum_lora_rule_percentile_ehu_${RULE_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}"
-export LOSS_CURRICULUM_SLUG="${LOSS_CURRICULUM_SLUG:-curriculum_loss_percentile_ehu_${LOSS_VERSION}}"
-export LOSS_CURRICULUM_EXP="${LOSS_CURRICULUM_EXP:-curriculum_lora_loss_percentile_ehu_${LOSS_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}"
-export RANDOM_BUCKET_CURRICULUM_SLUG="${RANDOM_BUCKET_CURRICULUM_SLUG:-curriculum_randombucket_percentile_ehu_${RANDOM_BUCKET_VERSION}}"
-export RANDOM_BUCKET_CURRICULUM_EXP="${RANDOM_BUCKET_CURRICULUM_EXP:-curriculum_lora_random_percentile_ehu_${RANDOM_BUCKET_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}"
-export MPOC_CURRICULUM_SLUG="${MPOC_CURRICULUM_SLUG:-curriculum_mpoc_percentile_ehu_${MPOC_VERSION}}"
-export MPOC_CURRICULUM_EXP="${MPOC_CURRICULUM_EXP:-curriculum_lora_mpoc_percentile_ehu_${MPOC_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}"
+export RULE_CURRICULUM_SLUG="${RULE_CURRICULUM_SLUG:-curriculum_rule_percentile_ehu_${RULE_VERSION}${PROTOCOL_SLUG_PART}}"
+export RULE_CURRICULUM_EXP="${RULE_CURRICULUM_EXP:-curriculum_lora_rule_percentile_ehu_${RULE_VERSION}${PROTOCOL_NAME_PART}_${PERCENTILE_EHU_FINAL_PHASE}}"
+export LOSS_CURRICULUM_SLUG="${LOSS_CURRICULUM_SLUG:-curriculum_loss_percentile_ehu_${LOSS_VERSION}${PROTOCOL_SLUG_PART}}"
+export LOSS_CURRICULUM_EXP="${LOSS_CURRICULUM_EXP:-curriculum_lora_loss_percentile_ehu_${LOSS_VERSION}${PROTOCOL_NAME_PART}_${PERCENTILE_EHU_FINAL_PHASE}}"
+export RANDOM_BUCKET_CURRICULUM_SLUG="${RANDOM_BUCKET_CURRICULUM_SLUG:-curriculum_randombucket_percentile_ehu_${RANDOM_BUCKET_VERSION}${PROTOCOL_SLUG_PART}}"
+export RANDOM_BUCKET_CURRICULUM_EXP="${RANDOM_BUCKET_CURRICULUM_EXP:-curriculum_lora_random_percentile_ehu_${RANDOM_BUCKET_VERSION}${PROTOCOL_NAME_PART}_${PERCENTILE_EHU_FINAL_PHASE}}"
+export MPOC_CURRICULUM_SLUG="${MPOC_CURRICULUM_SLUG:-curriculum_mpoc_percentile_ehu_${MPOC_VERSION}${PROTOCOL_SLUG_PART}}"
+export MPOC_CURRICULUM_EXP="${MPOC_CURRICULUM_EXP:-curriculum_lora_mpoc_percentile_ehu_${MPOC_VERSION}${PROTOCOL_NAME_PART}_${PERCENTILE_EHU_FINAL_PHASE}}"
 
 # LLM has legacy and percentile-EHU naming in circulation. The unified wrapper
 # defaults to the percentile-EHU output produced by run_lora_experiment_suite.sh.
@@ -81,8 +88,8 @@ export LLM_EXP_STYLE="${LLM_EXP_STYLE:-percentile_ehu}" # percentile_ehu or lega
 case "$LLM_EXP_STYLE" in
     percentile_ehu)
         export LLM_CURRICULUM_VERSION="${LLM_CURRICULUM_VERSION:-$LLM_VERSION}"
-        export LLM_CURRICULUM_SLUG="${LLM_CURRICULUM_SLUG:-curriculum_llm_percentile_ehu_${LLM_VERSION}}"
-        export LLM_CURRICULUM_EXP="${LLM_CURRICULUM_EXP:-curriculum_lora_llm_percentile_ehu_${LLM_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}"
+        export LLM_CURRICULUM_SLUG="${LLM_CURRICULUM_SLUG:-curriculum_llm_percentile_ehu_${LLM_VERSION}${PROTOCOL_SLUG_PART}}"
+        export LLM_CURRICULUM_EXP="${LLM_CURRICULUM_EXP:-curriculum_lora_llm_percentile_ehu_${LLM_VERSION}${PROTOCOL_NAME_PART}_${PERCENTILE_EHU_FINAL_PHASE}}"
         ;;
     legacy_guided)
         export LLM_CURRICULUM_VERSION="${LLM_CURRICULUM_VERSION:-$LLM_VERSION}"
@@ -99,14 +106,14 @@ esac
 # Set UNIFORM_EXP_STYLE=legacy_uniform for older curriculum_lora_uniform_* runs.
 export UNIFORM_EXP_STYLE="${UNIFORM_EXP_STYLE:-uniform_only}" # uniform_only or legacy_uniform
 export UNIFORM_CURRICULUM_VERSION="${UNIFORM_CURRICULUM_VERSION:-$UNIFORM_VERSION}"
-export UNIFORM_CURRICULUM_SLUG="${UNIFORM_CURRICULUM_SLUG:-curriculum_uniform_${UNIFORM_VERSION}}"
+export UNIFORM_CURRICULUM_SLUG="${UNIFORM_CURRICULUM_SLUG:-curriculum_uniform_${UNIFORM_VERSION}${PROTOCOL_SLUG_PART}}"
 export DRY_RUN="${DRY_RUN:-false}"
 case "$UNIFORM_EXP_STYLE" in
     uniform_only)
-        export UNIFORM_CURRICULUM_EXP="${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_only_${UNIFORM_VERSION}_stage3_uniform}"
+        export UNIFORM_CURRICULUM_EXP="${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_only_${UNIFORM_VERSION}${PROTOCOL_NAME_PART}_stage3_uniform}"
         ;;
     legacy_uniform)
-        export UNIFORM_CURRICULUM_EXP="${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_${UNIFORM_VERSION}_stage3_uniform}"
+        export UNIFORM_CURRICULUM_EXP="${UNIFORM_CURRICULUM_EXP:-curriculum_lora_uniform_${UNIFORM_VERSION}${PROTOCOL_NAME_PART}_stage3_uniform}"
         ;;
     *)
         echo "Error: unsupported UNIFORM_EXP_STYLE=${UNIFORM_EXP_STYLE}. Use uniform_only or legacy_uniform."
@@ -161,6 +168,7 @@ if is_enabled "$DRY_RUN"; then
     printf '\n'
     echo "  methods: zero_shot=${RUN_ZERO_SHOT}, rule=${RUN_RULE}, loss=${RUN_LOSS}, uniform=${RUN_UNIFORM}, random_bucket=${RUN_RANDOM_BUCKET}, llm=${RUN_LLM}, mpoc=${RUN_MPOC}"
     echo "  versions: rule=${RULE_CURRICULUM_VERSION}, loss=${LOSS_CURRICULUM_VERSION}, random_bucket=${RANDOM_BUCKET_CURRICULUM_VERSION}, llm=${LLM_CURRICULUM_VERSION}, mpoc=${MPOC_CURRICULUM_VERSION}, uniform=${UNIFORM_CURRICULUM_VERSION}"
+    echo "  training protocol: ${TRAINING_PROTOCOL_ID:-legacy-unversioned}"
     echo "  slugs: rule=${RULE_CURRICULUM_SLUG}, loss=${LOSS_CURRICULUM_SLUG}, random_bucket=${RANDOM_BUCKET_CURRICULUM_SLUG}, llm=${LLM_CURRICULUM_SLUG}, mpoc=${MPOC_CURRICULUM_SLUG}, uniform=${UNIFORM_CURRICULUM_SLUG}"
     echo "  exps: rule=${RULE_CURRICULUM_EXP}, loss=${LOSS_CURRICULUM_EXP}, random_bucket=${RANDOM_BUCKET_CURRICULUM_EXP}, llm=${LLM_CURRICULUM_EXP}, mpoc=${MPOC_CURRICULUM_EXP}, uniform=${UNIFORM_CURRICULUM_EXP}"
     exit 0

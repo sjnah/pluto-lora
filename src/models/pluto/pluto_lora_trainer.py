@@ -75,6 +75,14 @@ class PLUTOLoRATrainer(LightningTrainer):
         ultra_minimal: bool = True,
         trainable_modules: Optional[list] = None,  # For backward compatibility (not used with encoder-only LoRA)
         is_curriculum_stage: bool = False,  # For backward compatibility
+        reset_optimizer_moments_on_resume: bool = False,
+        scheduler_horizon_epochs: Optional[int] = None,
+        scheduler_type: str = "warmup_cosine",
+        training_protocol_id: str = "",
+        training_protocol_sha256: str = "",
+        curriculum_method_id: str = "",
+        curriculum_method_sha256: str = "",
+        require_protocol_match_on_resume: bool = False,
         # Training stability
         gradient_clip_val: float = 1.0,
         skip_nan_steps: bool = True,
@@ -103,6 +111,8 @@ class PLUTOLoRATrainer(LightningTrainer):
             gradient_clip_val: Gradient clipping value
             skip_nan_steps: Whether to skip steps with NaN/Inf loss
             remove_invalid_goals: Whether to remove invalid goals (configurable)
+            scheduler_horizon_epochs: Final cumulative epoch horizon used to
+                construct one scheduler across multi-process phase resumes.
         """
         # Initialize parent class
         super().__init__(
@@ -137,6 +147,33 @@ class PLUTOLoRATrainer(LightningTrainer):
         self.warmup_steps = warmup_steps
         self.trainable_modules = trainable_modules  # Store for compatibility (not used)
         self.is_curriculum_stage = is_curriculum_stage  # Store for compatibility
+        self.reset_optimizer_moments_on_resume = bool(reset_optimizer_moments_on_resume)
+        self.scheduler_horizon_epochs = (
+            int(scheduler_horizon_epochs)
+            if scheduler_horizon_epochs is not None
+            else None
+        )
+        self.scheduler_type = str(scheduler_type)
+        if self.scheduler_type not in {"warmup_cosine", "warmup_constant"}:
+            raise ValueError(
+                "scheduler_type must be warmup_cosine or warmup_constant, got "
+                f"{self.scheduler_type!r}"
+            )
+        self.training_protocol_id = str(training_protocol_id or "")
+        self.training_protocol_sha256 = str(training_protocol_sha256 or "")
+        self.curriculum_method_id = str(curriculum_method_id or "")
+        self.curriculum_method_sha256 = str(curriculum_method_sha256 or "")
+        self.require_protocol_match_on_resume = bool(
+            require_protocol_match_on_resume
+        )
+        if self.scheduler_horizon_epochs is not None:
+            if self.scheduler_horizon_epochs <= 0:
+                raise ValueError("scheduler_horizon_epochs must be positive")
+            if self.scheduler_horizon_epochs < self.epochs:
+                raise ValueError(
+                    "scheduler_horizon_epochs must be greater than or equal to "
+                    f"the current cumulative epochs ({self.epochs})"
+                )
         
         # Training stability
         self.gradient_clip_val = gradient_clip_val
@@ -179,7 +216,7 @@ class PLUTOLoRATrainer(LightningTrainer):
             logger.info("LoRA disabled - using ultra-minimal head-only fine-tuning")
     
     def on_fit_start(self) -> None:
-        """Initialize pretrained state for L2-SP and EMA."""
+        """Initialize metrics and LoRA state, then apply any boundary reset."""
         super().on_fit_start()
         
         # Verify LayerNorm affine parameters
@@ -223,6 +260,9 @@ class PLUTOLoRATrainer(LightningTrainer):
                     self.ema_model_state[name] = param.data.clone().detach()
             self.ema_initialized = True
             logger.info(f"✓ Initialized EMA for {len(self.ema_model_state)} trainable parameters")
+
+        self._reset_live_optimizer_moments_if_requested()
+        self._validate_scheduler_horizon()
     
     def training_step(
         self,
@@ -435,17 +475,38 @@ class PLUTOLoRATrainer(LightningTrainer):
         # Create optimizer
         optimizer = torch.optim.AdamW(optim_groups)
         
-        # Create scheduler with warmup
-        from src.optim.warmup_cos_lr import WarmupCosLR
+        # Create one scheduler whose state is resumed across phase processes.
+        estimated_steps = (
+            self.trainer.estimated_stepping_batches
+            if hasattr(self.trainer, "estimated_stepping_batches")
+            else self.epochs * 1000
+        )
+        total_steps = self._resolve_scheduler_total_steps(
+            estimated_steps=estimated_steps,
+            current_cumulative_epochs=self.epochs,
+            scheduler_horizon_epochs=self.scheduler_horizon_epochs,
+        )
+        self._configured_scheduler_total_steps = total_steps
+        logger.info(
+            "Scheduler horizon: current cumulative epochs=%d, final horizon epochs=%s, "
+            "estimated current-horizon steps=%d, scheduler total steps=%d",
+            self.epochs,
+            self.scheduler_horizon_epochs,
+            int(estimated_steps),
+            total_steps,
+        )
         
-        # Calculate total steps
-        # Assume we can get this from trainer or datamodule
-        # For now, use a reasonable estimate
-        total_steps = self.trainer.estimated_stepping_batches if hasattr(self.trainer, 'estimated_stepping_batches') else self.epochs * 1000
-        
-        # WarmupCosLR may use different parameter names, check the actual implementation
-        # For now, use epochs-based scheduler
-        try:
+        if self.scheduler_type == "warmup_constant":
+            from src.optim.warmup_constant_lr import WarmupConstantLR
+
+            scheduler = WarmupConstantLR(
+                optimizer=optimizer,
+                warmup_steps=self.warmup_steps,
+                total_steps=total_steps,
+            )
+        else:
+            from src.optim.warmup_cos_lr import WarmupCosLR
+
             scheduler = WarmupCosLR(
                 optimizer=optimizer,
                 lr=self.lora_lr if self.lora_enabled else self.head_lr,
@@ -454,15 +515,11 @@ class PLUTOLoRATrainer(LightningTrainer):
                 epochs=self.epochs,
                 total_steps=total_steps,
             )
-        except TypeError:
-            # Fallback: use epochs if total_steps not supported
-            scheduler = WarmupCosLR(
-                optimizer=optimizer,
-                lr=self.lora_lr if self.lora_enabled else self.head_lr,
-                min_lr=1e-6,
-                epochs=self.epochs,
-                warmup_epochs=max(1, self.warmup_steps // 1000),  # Approximate
-            )
+        logger.info(
+            "Scheduler type: %s, warmup steps=%d",
+            self.scheduler_type,
+            self.warmup_steps,
+        )
         
         # Log actual learning rates for verification
         logger.info(f"\n{'='*80}")
@@ -481,6 +538,64 @@ class PLUTOLoRATrainer(LightningTrainer):
                 "frequency": 1,
             },
         }
+
+    @staticmethod
+    def _resolve_scheduler_total_steps(
+        *,
+        estimated_steps: int,
+        current_cumulative_epochs: int,
+        scheduler_horizon_epochs: Optional[int],
+    ) -> int:
+        """Scale the phase-local estimate to one final cumulative horizon."""
+        estimated_steps = int(estimated_steps)
+        current_cumulative_epochs = int(current_cumulative_epochs)
+        if estimated_steps <= 0:
+            raise ValueError("estimated_steps must be positive")
+        if current_cumulative_epochs <= 0:
+            raise ValueError("current_cumulative_epochs must be positive")
+        if scheduler_horizon_epochs is None:
+            return estimated_steps
+
+        scheduler_horizon_epochs = int(scheduler_horizon_epochs)
+        if scheduler_horizon_epochs < current_cumulative_epochs:
+            raise ValueError(
+                "scheduler_horizon_epochs must cover the current cumulative epochs"
+            )
+
+        scaled_steps = estimated_steps * scheduler_horizon_epochs
+        return (scaled_steps + current_cumulative_epochs - 1) // current_cumulative_epochs
+
+    def _validate_scheduler_horizon(self) -> None:
+        """Reject a resumed scheduler whose checkpoint restored a stale horizon."""
+        expected_total_steps = getattr(
+            self, "_configured_scheduler_total_steps", None
+        )
+        scheduler_configs = getattr(self.trainer, "lr_scheduler_configs", None)
+        if expected_total_steps is None or not scheduler_configs:
+            return
+
+        for index, scheduler_config in enumerate(scheduler_configs):
+            scheduler = getattr(scheduler_config, "scheduler", scheduler_config)
+            actual_total_steps = getattr(scheduler, "total_steps", None)
+            if actual_total_steps is None:
+                continue
+            actual_total_steps = int(actual_total_steps)
+            logger.info(
+                "Scheduler %d resume validation: global_step=%d, total_steps=%d, "
+                "expected_total_steps=%d, base_lrs=%s",
+                index,
+                int(getattr(self.trainer, "global_step", 0)),
+                actual_total_steps,
+                expected_total_steps,
+                getattr(scheduler, "base_lrs", None),
+            )
+            if actual_total_steps != expected_total_steps:
+                raise RuntimeError(
+                    "Restored scheduler horizon does not match the configured final "
+                    f"training horizon: checkpoint total_steps={actual_total_steps}, "
+                    f"expected={expected_total_steps}. Rerun from phase A instead of "
+                    "resuming a checkpoint created with the old phase-local horizon."
+                )
     
     def on_train_epoch_start(self) -> None:
         """Log actual learning rates at epoch start."""
@@ -532,6 +647,8 @@ class PLUTOLoRATrainer(LightningTrainer):
         
         Note: This modifies the checkpoint dict in-place, which Lightning will use.
         """
+        self._validate_checkpoint_protocol(checkpoint)
+
         if self.is_curriculum_stage:
             logger.info("🔄 Curriculum stage detected: Skipping optimizer state loading")
             # Remove optimizer and lr_scheduler states to force re-initialization
@@ -546,6 +663,92 @@ class PLUTOLoRATrainer(LightningTrainer):
             checkpoint["global_step"] = 0
             logger.info("  → Reset loop progress, epoch, and global_step for a fresh curriculum stage")
             logger.info("  ✓ Will load model weights but re-initialize optimizer/scheduler")
+        elif self.reset_optimizer_moments_on_resume:
+            logger.info("🔄 Selected stage boundary: Resetting optimizer moments only")
+            optimizer_states = checkpoint.get("optimizer_states", [])
+            for optimizer_state in optimizer_states:
+                # Preserve param_groups, including their current LR values, but
+                # discard Adam exp_avg/exp_avg_sq/step state. Lightning will
+                # load the scheduler and loop progress normally.
+                optimizer_state["state"] = {}
+            logger.info(
+                "  ✓ Cleared optimizer tensor state; preserved parameter groups, "
+                "LR scheduler, epoch, and global_step"
+            )
+
+    def on_save_checkpoint(self, checkpoint: Dict) -> None:
+        """Persist the resolved protocol identity used for safe phase resume."""
+        checkpoint["lora_training_protocol"] = {
+            "protocol_id": self.training_protocol_id,
+            "protocol_sha256": self.training_protocol_sha256,
+            "method_id": self.curriculum_method_id,
+            "method_sha256": self.curriculum_method_sha256,
+            "scheduler_type": self.scheduler_type,
+            "scheduler_horizon_epochs": self.scheduler_horizon_epochs,
+        }
+
+    def _validate_checkpoint_protocol(self, checkpoint: Dict) -> None:
+        if not getattr(self, "require_protocol_match_on_resume", False):
+            return
+
+        actual = checkpoint.get("lora_training_protocol")
+        if not isinstance(actual, dict):
+            raise RuntimeError(
+                "Resume checkpoint has no lora_training_protocol identity; "
+                "start from phase A with the selected protocol"
+            )
+        expected = {
+            "protocol_id": getattr(self, "training_protocol_id", ""),
+            "protocol_sha256": getattr(self, "training_protocol_sha256", ""),
+            "method_id": getattr(self, "curriculum_method_id", ""),
+            "method_sha256": getattr(self, "curriculum_method_sha256", ""),
+            "scheduler_type": getattr(self, "scheduler_type", ""),
+            "scheduler_horizon_epochs": getattr(
+                self, "scheduler_horizon_epochs", None
+            ),
+        }
+        mismatches = {
+            key: {"checkpoint": actual.get(key), "current": value}
+            for key, value in expected.items()
+            if actual.get(key) != value
+        }
+        if mismatches:
+            raise RuntimeError(
+                "Resume checkpoint training protocol mismatch: "
+                f"{mismatches}"
+            )
+
+    @staticmethod
+    def _clear_live_optimizer_moments(optimizers) -> int:
+        """Clear restored optimizer tensor state without touching param groups."""
+        cleared_entries = 0
+        for optimizer in optimizers:
+            cleared_entries += len(optimizer.state)
+            optimizer.state.clear()
+        return cleared_entries
+
+    def _reset_live_optimizer_moments_if_requested(self) -> None:
+        """Apply the selected-boundary reset after Lightning restores optimizers.
+
+        Mutating ``optimizer_states`` in ``on_load_checkpoint`` is not sufficient
+        on every Lightning resume path. ``on_fit_start`` runs after the live
+        optimizers have been restored, so this is the authoritative A->B reset.
+        Scheduler, loop, epoch, global-step, and optimizer param-group state are
+        intentionally left unchanged.
+        """
+        if not self.reset_optimizer_moments_on_resume:
+            return
+        if getattr(self, "_optimizer_moments_reset_applied", False):
+            return
+
+        optimizers = list(self.trainer.optimizers)
+        cleared_entries = self._clear_live_optimizer_moments(optimizers)
+        self._optimizer_moments_reset_applied = True
+        logger.info(
+            "🔄 Cleared %d live optimizer moment entries after checkpoint restore; "
+            "scheduler and loop progress are preserved",
+            cleared_entries,
+        )
     
     def save_lora_only(self, filepath: str) -> None:
         """Save LoRA-only checkpoint."""

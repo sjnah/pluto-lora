@@ -206,6 +206,10 @@ run_simulation() {
     local ckpt=$2
     local experiment=$3
     local scenario_builder=${4:-""}
+    local simulation_log_args=()
+    is_enabled "${DISABLE_SIMULATION_LOG:-false}" && simulation_log_args=(--disable-simulation-log)
+    local simulation_log_overrides=()
+    is_enabled "${DISABLE_SIMULATION_LOG:-false}" && simulation_log_overrides=(callback=no_simulation_log)
     
     # Determine simulation type
     if [ "$SIMULATION_TYPE" = "reactive" ]; then
@@ -231,6 +235,7 @@ run_simulation() {
             --batch-size $BATCH_SIZE \
             --limit $SCENARIOS_PER_STAGE \
             --simulation-verbose "$SIMULATION_VERBOSE" \
+            "${simulation_log_args[@]}" \
             "${worker_args[@]}" \
             $builder_arg
     else
@@ -256,6 +261,7 @@ run_simulation() {
             enable_simulation_progress_bar="$ENABLE_PROGRESS_BAR" \
             $builder_arg \
             experiment="$experiment" \
+            "${simulation_log_overrides[@]}" \
             "${WORKER_OVERRIDES[@]}"
     fi
 }
@@ -387,6 +393,10 @@ run_enabled_models() {
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT${RANDOM_BUCKET_CURRICULUM_VERSION:+ (${RANDOM_BUCKET_CURRICULUM_VERSION})}" "$RANDOM_BUCKET_CURRICULUM_SLUG" "$RANDOM_BUCKET_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_simulation "LLM-guided curriculum (${LLM_CURRICULUM_VERSION})" "$LLM_CURRICULUM_SLUG" "$CURRICULUM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_MPOC" && run_model_simulation "MPOC curriculum${MPOC_CURRICULUM_VERSION:+ (${MPOC_CURRICULUM_VERSION})}" "$MPOC_CURRICULUM_SLUG" "$MPOC_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
+
+    # A disabled final method makes the last `&&` expression return 1. Do not
+    # let that turn an otherwise successful benchmark into a suite failure.
+    return 0
 }
 
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.

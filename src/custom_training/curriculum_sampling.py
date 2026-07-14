@@ -13,10 +13,23 @@ import random
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
 
 
 BUCKET_NAMES = ("easy", "medium", "hard")
+
+
+def validate_demonstration_type_routing(mode: str, curriculum_method: str) -> str:
+    """Validate the LLM-v4-only routing guard and return normalized mode."""
+
+    normalized = str(mode or "observe_only").strip().lower()
+    if normalized not in {"observe_only", "enabled"}:
+        raise ValueError(f"Unsupported demonstration_type_mode: {normalized}")
+    if normalized == "enabled" and str(curriculum_method) != "llm_guided_v4":
+        raise ValueError(
+            "Demonstration-type routing is guarded to curriculum_method=llm_guided_v4"
+        )
+    return normalized
 
 
 def stable_hash_fraction(value: str, seed: int = 0) -> float:
@@ -200,6 +213,297 @@ def build_exact_bucket_quota_indices(
             for bucket_name in BUCKET_NAMES
         },
         "repeat_stats": bucket_metadata,
+    }
+    return selected, metadata
+
+
+def build_exposure_capped_bucket_quota_indices(
+    bucket_sizes: Sequence[int],
+    target_proportions: Sequence[float],
+    *,
+    scenario_ids: Sequence[str],
+    near_duplicate_groups: Sequence[Sequence[str]],
+    max_repeat_per_scenario: int,
+    max_repeat_per_group: int,
+    prior_scenario_exposure: Mapping[str, int] | None = None,
+    prior_group_exposure: Mapping[str, int] | None = None,
+    max_cumulative_exposure_per_scenario: int = 0,
+    max_cumulative_exposure_per_group: int = 0,
+    seed: int,
+    epoch: int,
+    shuffle_output: bool = True,
+) -> Tuple[List[int], Dict[str, object]]:
+    """Build exact bucket quotas while limiting scenario/group exposure.
+
+    ``near_duplicate_groups`` may contain multiple temporal cells per scenario.
+    A draw consumes capacity from every cell touched by that scenario. This
+    avoids the boundary failure of assigning each overlapping interval to one
+    start-time bin while keeping the cap implementation deterministic.
+    """
+
+    total_samples = int(sum(bucket_sizes))
+    if len(bucket_sizes) != 3:
+        raise ValueError(f"Expected three bucket sizes, got {len(bucket_sizes)}")
+    if any(int(size) <= 0 for size in bucket_sizes):
+        raise ValueError(f"Curriculum bucket sizes must be positive: {bucket_sizes}")
+    if len(scenario_ids) != total_samples or len(near_duplicate_groups) != total_samples:
+        raise ValueError(
+            "scenario/group metadata must align with the concatenated dataset: "
+            f"{len(scenario_ids)} scenario ids, {len(near_duplicate_groups)} group lists, "
+            f"{total_samples} samples"
+        )
+    if len(set(scenario_ids)) != len(scenario_ids):
+        raise ValueError("scenario_ids must be unique across curriculum buckets")
+    if max_repeat_per_scenario <= 0:
+        raise ValueError("max_repeat_per_scenario must be positive")
+    if max_repeat_per_group <= 0:
+        raise ValueError("max_repeat_per_group must be positive")
+    if any(not groups for groups in near_duplicate_groups):
+        raise ValueError("Every scenario must have at least one near-duplicate group")
+
+    requested_counts = largest_remainder_counts(total_samples, target_proportions)
+    offsets = [0]
+    for size in bucket_sizes[:-1]:
+        offsets.append(offsets[-1] + int(size))
+    bucket_indices = [
+        list(range(offset, offset + int(size)))
+        for offset, size in zip(offsets, bucket_sizes)
+    ]
+
+    prior_scenario = Counter({str(key): int(value) for key, value in (prior_scenario_exposure or {}).items()})
+    prior_group = Counter({str(key): int(value) for key, value in (prior_group_exposure or {}).items()})
+    epoch_scenario: Counter[str] = Counter()
+    epoch_group: Counter[str] = Counter()
+    selected: List[int] = []
+    selected_per_bucket = [0, 0, 0]
+    rng = random.Random(int(seed) + int(epoch) * 9176 + 17)
+    tie_break = {index: rng.random() for index in range(total_samples)}
+
+    def eligible(index: int) -> bool:
+        scenario_id = str(scenario_ids[index])
+        groups = [str(group) for group in near_duplicate_groups[index]]
+        if epoch_scenario[scenario_id] >= max_repeat_per_scenario:
+            return False
+        if any(epoch_group[group] >= max_repeat_per_group for group in groups):
+            return False
+        if (
+            max_cumulative_exposure_per_scenario > 0
+            and prior_scenario[scenario_id] + epoch_scenario[scenario_id]
+            >= max_cumulative_exposure_per_scenario
+        ):
+            return False
+        if max_cumulative_exposure_per_group > 0 and any(
+            prior_group[group] + epoch_group[group] >= max_cumulative_exposure_per_group
+            for group in groups
+        ):
+            return False
+        return True
+
+    while len(selected) < total_samples:
+        active_buckets = [
+            bucket_idx
+            for bucket_idx, requested in enumerate(requested_counts)
+            if selected_per_bucket[bucket_idx] < requested
+        ]
+        if not active_buckets:
+            break
+        # Interleave buckets by completion ratio so a cross-bucket temporal
+        # group cannot be consumed wholesale by the first bucket.
+        bucket_idx = min(
+            active_buckets,
+            key=lambda idx: (
+                selected_per_bucket[idx] / max(1, requested_counts[idx]),
+                idx,
+            ),
+        )
+        candidates = [index for index in bucket_indices[bucket_idx] if eligible(index)]
+        if not candidates:
+            bucket_name = BUCKET_NAMES[bucket_idx]
+            raise ValueError(
+                f"Exposure caps make exact quota impossible for {bucket_name}: "
+                f"selected {selected_per_bucket[bucket_idx]} of {requested_counts[bucket_idx]} draws. "
+                "Increase scenario/group caps or revise the stage quota."
+            )
+        index = min(
+            candidates,
+            key=lambda candidate: (
+                prior_scenario[str(scenario_ids[candidate])]
+                + epoch_scenario[str(scenario_ids[candidate])],
+                max(
+                    prior_group[str(group)] + epoch_group[str(group)]
+                    for group in near_duplicate_groups[candidate]
+                ),
+                tie_break[candidate],
+            ),
+        )
+        selected.append(index)
+        selected_per_bucket[bucket_idx] += 1
+        scenario_id = str(scenario_ids[index])
+        epoch_scenario[scenario_id] += 1
+        for group in near_duplicate_groups[index]:
+            epoch_group[str(group)] += 1
+
+    if shuffle_output:
+        rng.shuffle(selected)
+
+    cumulative_scenario = prior_scenario + epoch_scenario
+    cumulative_group = prior_group + epoch_group
+    scenario_values = list(epoch_scenario.values())
+    group_values = list(epoch_group.values())
+    cumulative_values = list(cumulative_scenario.values())
+    metadata: Dict[str, object] = {
+        "sampler_mode": "exact_bucket_quota",
+        "epoch": int(epoch),
+        "seed": int(seed),
+        "total_samples": total_samples,
+        "requested_draws": dict(zip(BUCKET_NAMES, requested_counts)),
+        "actual_draws": dict(zip(BUCKET_NAMES, selected_per_bucket)),
+        "max_repeat_per_scenario": int(max_repeat_per_scenario),
+        "max_repeat_per_near_duplicate_group": int(max_repeat_per_group),
+        "max_cumulative_exposure_per_scenario": int(max_cumulative_exposure_per_scenario),
+        "max_cumulative_exposure_per_near_duplicate_group": int(max_cumulative_exposure_per_group),
+        "scenario_exposure": dict(epoch_scenario),
+        "near_duplicate_group_exposure": dict(epoch_group),
+        "cumulative_scenario_exposure": dict(cumulative_scenario),
+        "cumulative_near_duplicate_group_exposure": dict(cumulative_group),
+        "unique_scenario_count": len(epoch_scenario),
+        "unique_near_duplicate_group_count": len(epoch_group),
+        "max_scenario_exposure": max(scenario_values, default=0),
+        "mean_scenario_exposure": (
+            sum(scenario_values) / len(scenario_values) if scenario_values else 0.0
+        ),
+        "max_near_duplicate_group_exposure": max(group_values, default=0),
+        "mean_near_duplicate_group_exposure": (
+            sum(group_values) / len(group_values) if group_values else 0.0
+        ),
+        "effective_sample_size": (
+            (sum(cumulative_values) ** 2) / sum(value * value for value in cumulative_values)
+            if cumulative_values
+            else 0.0
+        ),
+    }
+    return selected, metadata
+
+
+def build_exposure_capped_weighted_indices(
+    weights: Sequence[float],
+    *,
+    scenario_ids: Sequence[str],
+    near_duplicate_groups: Sequence[Sequence[str]],
+    num_samples: int,
+    max_repeat_per_scenario: int,
+    max_repeat_per_group: int,
+    prior_scenario_exposure: Mapping[str, int] | None = None,
+    prior_group_exposure: Mapping[str, int] | None = None,
+    max_cumulative_exposure_per_scenario: int = 0,
+    max_cumulative_exposure_per_group: int = 0,
+    category_ids: Sequence[str] | None = None,
+    max_exposure_per_category: Mapping[str, int] | None = None,
+    seed: int,
+    epoch: int,
+) -> Tuple[List[int], Dict[str, object]]:
+    """Draw weighted samples with the same scenario/temporal-cell caps."""
+
+    if len(weights) != len(scenario_ids) or len(weights) != len(near_duplicate_groups):
+        raise ValueError("weighted scenario/group metadata must align with weights")
+    if category_ids is not None and len(category_ids) != len(weights):
+        raise ValueError("category_ids must align with weighted samples")
+    if len(set(scenario_ids)) != len(scenario_ids):
+        raise ValueError("scenario_ids must be unique across weighted pools")
+    if any(float(weight) < 0.0 for weight in weights) or sum(weights) <= 0.0:
+        raise ValueError("weighted sampling requires non-negative, non-zero weights")
+    if num_samples < 0:
+        raise ValueError("num_samples must be non-negative")
+    if max_repeat_per_scenario <= 0 or max_repeat_per_group <= 0:
+        raise ValueError("scenario and group repeat caps must be positive")
+    if any(not groups for groups in near_duplicate_groups):
+        raise ValueError("Every scenario must have at least one near-duplicate group")
+
+    prior_scenario = Counter({str(key): int(value) for key, value in (prior_scenario_exposure or {}).items()})
+    prior_group = Counter({str(key): int(value) for key, value in (prior_group_exposure or {}).items()})
+    epoch_scenario: Counter[str] = Counter()
+    epoch_group: Counter[str] = Counter()
+    epoch_category: Counter[str] = Counter()
+    category_caps = {
+        str(key): int(value) for key, value in (max_exposure_per_category or {}).items()
+    }
+    selected: List[int] = []
+    rng = random.Random(int(seed) + int(epoch) * 9176 + 31)
+
+    def eligible(index: int) -> bool:
+        scenario_id = str(scenario_ids[index])
+        groups = [str(group) for group in near_duplicate_groups[index]]
+        if epoch_scenario[scenario_id] >= max_repeat_per_scenario:
+            return False
+        if any(epoch_group[group] >= max_repeat_per_group for group in groups):
+            return False
+        if (
+            max_cumulative_exposure_per_scenario > 0
+            and prior_scenario[scenario_id] + epoch_scenario[scenario_id]
+            >= max_cumulative_exposure_per_scenario
+        ):
+            return False
+        if max_cumulative_exposure_per_group > 0 and any(
+            prior_group[group] + epoch_group[group] >= max_cumulative_exposure_per_group
+            for group in groups
+        ):
+            return False
+        if category_ids is not None:
+            category = str(category_ids[index])
+            if category in category_caps and epoch_category[category] >= category_caps[category]:
+                return False
+        return True
+
+    for _ in range(num_samples):
+        candidates = [
+            index
+            for index, weight in enumerate(weights)
+            if float(weight) > 0.0 and eligible(index)
+        ]
+        if not candidates:
+            raise ValueError(
+                f"Exposure caps make weighted draw impossible after {len(selected)} of "
+                f"{num_samples} samples"
+            )
+        candidate_weights = [float(weights[index]) for index in candidates]
+        index = rng.choices(candidates, weights=candidate_weights, k=1)[0]
+        selected.append(index)
+        scenario_id = str(scenario_ids[index])
+        epoch_scenario[scenario_id] += 1
+        for group in near_duplicate_groups[index]:
+            epoch_group[str(group)] += 1
+        if category_ids is not None:
+            epoch_category[str(category_ids[index])] += 1
+
+    cumulative_scenario = prior_scenario + epoch_scenario
+    cumulative_group = prior_group + epoch_group
+    cumulative_values = list(cumulative_scenario.values())
+    metadata: Dict[str, object] = {
+        "sampler_mode": "exposure_capped_weighted",
+        "epoch": int(epoch),
+        "seed": int(seed),
+        "total_samples": int(num_samples),
+        "scenario_exposure": dict(epoch_scenario),
+        "near_duplicate_group_exposure": dict(epoch_group),
+        "category_exposure": dict(epoch_category),
+        "max_exposure_per_category": category_caps,
+        "cumulative_scenario_exposure": dict(cumulative_scenario),
+        "cumulative_near_duplicate_group_exposure": dict(cumulative_group),
+        "unique_scenario_count": len(epoch_scenario),
+        "unique_near_duplicate_group_count": len(epoch_group),
+        "max_scenario_exposure": max(epoch_scenario.values(), default=0),
+        "mean_scenario_exposure": (
+            sum(epoch_scenario.values()) / len(epoch_scenario) if epoch_scenario else 0.0
+        ),
+        "max_near_duplicate_group_exposure": max(epoch_group.values(), default=0),
+        "mean_near_duplicate_group_exposure": (
+            sum(epoch_group.values()) / len(epoch_group) if epoch_group else 0.0
+        ),
+        "effective_sample_size": (
+            (sum(cumulative_values) ** 2) / sum(value * value for value in cumulative_values)
+            if cumulative_values
+            else 0.0
+        ),
     }
     return selected, metadata
 

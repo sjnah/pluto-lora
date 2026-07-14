@@ -1,6 +1,11 @@
 import logging
 import random
 import json
+import csv
+import fcntl
+import hashlib
+import math
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -30,7 +35,12 @@ from nuplan.planning.training.preprocessing.feature_preprocessor import (
 )
 from nuplan.planning.utils.multithreading.worker_pool import WorkerPool
 
-from src.custom_training.curriculum_sampling import build_exact_bucket_quota_indices
+from src.custom_training.curriculum_sampling import (
+    build_exact_bucket_quota_indices,
+    build_exposure_capped_bucket_quota_indices,
+    build_exposure_capped_weighted_indices,
+    validate_demonstration_type_routing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +72,14 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         sampling_log_path: Optional[str] = None,
         score_method: str = "",
         phase_name: str = "",
+        phase_start_epoch: int = 0,
+        scenario_records: Optional[List[Dict[str, Any]]] = None,
+        max_repeat_per_group: int = 0,
+        cumulative_exposure_state_path: Optional[str] = None,
+        max_cumulative_exposure_per_scenario: int = 0,
+        max_cumulative_exposure_per_group: int = 0,
+        batch_size: int = 1,
+        accumulate_grad_batches: int = 1,
     ):
         self._bucket_sizes = [int(size) for size in bucket_sizes]
         self._target_proportions = [float(value) for value in target_proportions]
@@ -70,6 +88,16 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         self._sampling_log_path = sampling_log_path
         self._score_method = score_method
         self._phase_name = phase_name
+        self._phase_start_epoch = int(phase_start_epoch)
+        if self._phase_start_epoch < 0:
+            raise ValueError("phase_start_epoch must be non-negative")
+        self._scenario_records = list(scenario_records or [])
+        self._max_repeat_per_group = int(max_repeat_per_group)
+        self._cumulative_exposure_state_path = cumulative_exposure_state_path
+        self._max_cumulative_exposure_per_scenario = int(max_cumulative_exposure_per_scenario)
+        self._max_cumulative_exposure_per_group = int(max_cumulative_exposure_per_group)
+        self._batch_size = max(1, int(batch_size))
+        self._accumulate_grad_batches = max(1, int(accumulate_grad_batches))
         self._epoch: Optional[int] = None
 
     def set_epoch(self, epoch: int) -> None:
@@ -83,21 +111,173 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         # epoch in the existing nuPlan wrapper path.
         return int(torch.initial_seed())
 
+    def _pool_fingerprint(self) -> str:
+        payload = [
+            {
+                "scenario_id": record["scenario_id"],
+                "near_duplicate_groups": record["near_duplicate_groups"],
+            }
+            for record in self._scenario_records
+        ]
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _plan_fingerprint(self, epoch: int) -> str:
+        payload = {
+            "phase_name": self._phase_name,
+            "epoch": int(epoch),
+            "bucket_sizes": self._bucket_sizes,
+            "target_proportions": self._target_proportions,
+            "max_repeat_per_scenario": self._max_repeat_per_scenario,
+            "max_repeat_per_group": self._max_repeat_per_group,
+            "max_cumulative_exposure_per_scenario": self._max_cumulative_exposure_per_scenario,
+            "max_cumulative_exposure_per_group": self._max_cumulative_exposure_per_group,
+            "random_seed": self._random_seed,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _build_indices(self, epoch: int, prior_scenario=None, prior_group=None):
+        if self._scenario_records and self._max_repeat_per_group > 0:
+            indices, metadata = build_exposure_capped_bucket_quota_indices(
+                self._bucket_sizes,
+                self._target_proportions,
+                scenario_ids=[record["scenario_id"] for record in self._scenario_records],
+                near_duplicate_groups=[
+                    record["near_duplicate_groups"] for record in self._scenario_records
+                ],
+                max_repeat_per_scenario=self._max_repeat_per_scenario,
+                max_repeat_per_group=self._max_repeat_per_group,
+                prior_scenario_exposure=prior_scenario,
+                prior_group_exposure=prior_group,
+                max_cumulative_exposure_per_scenario=self._max_cumulative_exposure_per_scenario,
+                max_cumulative_exposure_per_group=self._max_cumulative_exposure_per_group,
+                seed=self._random_seed,
+                epoch=epoch,
+            )
+        else:
+            indices, metadata = build_exact_bucket_quota_indices(
+                self._bucket_sizes,
+                self._target_proportions,
+                max_repeat_per_scenario=self._max_repeat_per_scenario,
+                seed=self._random_seed,
+                epoch=epoch,
+            )
+        if self._scenario_records:
+            sampled_records = [self._scenario_records[index] for index in indices]
+            metadata.update(
+                {
+                    "sampled_split_counts": dict(
+                        Counter(record.get("split", "unknown") for record in sampled_records)
+                    ),
+                    "log_exposure": dict(
+                        Counter(record.get("log_name", "unknown") for record in sampled_records)
+                    ),
+                    "demonstration_type_exposure": dict(
+                        Counter(
+                            record.get("demonstration_type", "normal")
+                            for record in sampled_records
+                        )
+                    ),
+                    "scenario_id_list": [
+                        record["scenario_id"] for record in sampled_records
+                    ],
+                    "actual_sampled_indices_logged": True,
+                }
+            )
+        return indices, metadata
+
+    def _persistent_plan(self, epoch: int):
+        if not self._cumulative_exposure_state_path:
+            return self._build_indices(epoch)
+
+        state_path = Path(self._cumulative_exposure_state_path)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = state_path.with_suffix(f"{state_path.suffix}.lock")
+        plan_key = f"{self._phase_name or 'phase'}:{epoch}"
+        fingerprint = self._pool_fingerprint()
+        plan_fingerprint = self._plan_fingerprint(epoch)
+        with lock_path.open("a+", encoding="utf-8") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            if state_path.exists():
+                with state_path.open("r", encoding="utf-8") as stream:
+                    state = json.load(stream)
+            else:
+                state = {
+                    "schema_version": 1,
+                    "pool_fingerprint": fingerprint,
+                    "cumulative_scenario_exposure": {},
+                    "cumulative_near_duplicate_group_exposure": {},
+                    "plans": {},
+                }
+            if state.get("pool_fingerprint") != fingerprint:
+                raise ValueError(
+                    "Cumulative exposure state belongs to a different scenario pool: "
+                    f"{state_path}"
+                )
+            existing = state.get("plans", {}).get(plan_key)
+            if existing is not None:
+                if existing.get("plan_fingerprint") != plan_fingerprint:
+                    raise ValueError(
+                        "Cumulative exposure plan configuration changed for existing key "
+                        f"{plan_key}: {state_path}"
+                    )
+                return list(existing["indices"]), dict(existing["metadata"])
+
+            indices, metadata = self._build_indices(
+                epoch,
+                prior_scenario=state.get("cumulative_scenario_exposure", {}),
+                prior_group=state.get("cumulative_near_duplicate_group_exposure", {}),
+            )
+            state["cumulative_scenario_exposure"] = metadata.get(
+                "cumulative_scenario_exposure", {}
+            )
+            state["cumulative_near_duplicate_group_exposure"] = metadata.get(
+                "cumulative_near_duplicate_group_exposure", {}
+            )
+            state.setdefault("plans", {})[plan_key] = {
+                "plan_fingerprint": plan_fingerprint,
+                "indices": indices,
+                "metadata": metadata,
+            }
+            temporary_path = state_path.with_name(f".{state_path.name}.{os.getpid()}.tmp")
+            with temporary_path.open("w", encoding="utf-8") as stream:
+                json.dump(state, stream, indent=2, sort_keys=True)
+            os.replace(temporary_path, state_path)
+            return indices, metadata
+
     def __iter__(self):
         epoch = self._current_epoch()
-        indices, metadata = build_exact_bucket_quota_indices(
-            self._bucket_sizes,
-            self._target_proportions,
-            max_repeat_per_scenario=self._max_repeat_per_scenario,
-            seed=self._random_seed,
-            epoch=epoch,
-        )
+        if epoch < self._phase_start_epoch:
+            # Lightning may iterate the dataloader while computing
+            # estimated_stepping_batches, before the resume checkpoint restores
+            # the real epoch. That preflight must not consume cumulative
+            # exposure or create an epoch-0 sampling artifact for later phases.
+            logger.info(
+                "Building non-persistent pre-resume sampling plan for phase %s: "
+                "observed epoch=%d, phase_start_epoch=%d",
+                self._phase_name,
+                epoch,
+                self._phase_start_epoch,
+            )
+            indices, _metadata = self._build_indices(epoch)
+            return iter(indices)
+        indices, metadata = self._persistent_plan(epoch)
         metadata["score_method"] = self._score_method
         metadata["phase_name"] = self._phase_name
         rank = 0
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             rank = int(torch.distributed.get_rank())
         metadata["distributed_rank"] = rank
+        world_size = 1
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            world_size = int(torch.distributed.get_world_size())
+        per_rank_batches = math.ceil(len(indices) / world_size / self._batch_size)
+        metadata["total_sampled_items"] = len(indices)
+        metadata["estimated_optimizer_updates"] = math.ceil(
+            per_rank_batches / self._accumulate_grad_batches
+        )
+        metadata["cumulative_exposure_state_path"] = self._cumulative_exposure_state_path
         if self._sampling_log_path:
             base_path = Path(self._sampling_log_path)
             log_path = base_path.with_name(
@@ -113,8 +293,128 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         return sum(self._bucket_sizes)
 
 
+class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
+    """Epoch-varying weighted sampler with persistent exposure caps."""
+
+    def __init__(
+        self,
+        *,
+        weights: List[float],
+        scenario_records: List[Dict[str, Any]],
+        num_samples: int,
+        max_repeat_per_scenario: int,
+        max_repeat_per_group: int,
+        random_seed: int,
+        cumulative_exposure_state_path: Optional[str],
+        max_cumulative_exposure_per_scenario: int,
+        max_cumulative_exposure_per_group: int,
+        sampling_log_path: Optional[str] = None,
+        score_method: str = "",
+        phase_name: str = "",
+        phase_start_epoch: int = 0,
+        batch_size: int = 1,
+        accumulate_grad_batches: int = 1,
+        max_exposure_per_demonstration_type: Optional[Dict[str, int]] = None,
+    ):
+        if (
+            max_cumulative_exposure_per_scenario > 0
+            or max_cumulative_exposure_per_group > 0
+        ) and not cumulative_exposure_state_path:
+            raise ValueError("Cumulative exposure caps require cumulative_exposure_state_path")
+        self._weights = [float(weight) for weight in weights]
+        self._num_samples = int(num_samples)
+        self._max_exposure_per_demonstration_type = dict(
+            max_exposure_per_demonstration_type or {}
+        )
+        super().__init__(
+            bucket_sizes=[self._num_samples],
+            target_proportions=[1.0],
+            max_repeat_per_scenario=max_repeat_per_scenario,
+            random_seed=random_seed,
+            sampling_log_path=sampling_log_path,
+            score_method=score_method,
+            phase_name=phase_name,
+            phase_start_epoch=phase_start_epoch,
+            scenario_records=scenario_records,
+            max_repeat_per_group=max_repeat_per_group,
+            cumulative_exposure_state_path=cumulative_exposure_state_path,
+            max_cumulative_exposure_per_scenario=max_cumulative_exposure_per_scenario,
+            max_cumulative_exposure_per_group=max_cumulative_exposure_per_group,
+            batch_size=batch_size,
+            accumulate_grad_batches=accumulate_grad_batches,
+        )
+
+    def _plan_fingerprint(self, epoch: int) -> str:
+        payload = {
+            "base": super()._plan_fingerprint(epoch),
+            "weights": self._weights,
+            "num_samples": self._num_samples,
+            "max_exposure_per_demonstration_type": self._max_exposure_per_demonstration_type,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _build_indices(self, epoch: int, prior_scenario=None, prior_group=None):
+        indices, metadata = build_exposure_capped_weighted_indices(
+            self._weights,
+            scenario_ids=[record["scenario_id"] for record in self._scenario_records],
+            near_duplicate_groups=[
+                record["near_duplicate_groups"] for record in self._scenario_records
+            ],
+            num_samples=self._num_samples,
+            max_repeat_per_scenario=self._max_repeat_per_scenario,
+            max_repeat_per_group=self._max_repeat_per_group,
+            prior_scenario_exposure=prior_scenario,
+            prior_group_exposure=prior_group,
+            max_cumulative_exposure_per_scenario=self._max_cumulative_exposure_per_scenario,
+            max_cumulative_exposure_per_group=self._max_cumulative_exposure_per_group,
+            category_ids=[
+                record.get("demonstration_type", "normal")
+                for record in self._scenario_records
+            ],
+            max_exposure_per_category=self._max_exposure_per_demonstration_type,
+            seed=self._random_seed,
+            epoch=epoch,
+        )
+        sampled_records = [self._scenario_records[index] for index in indices]
+        metadata.update(
+            {
+                "sampled_split_counts": dict(
+                    Counter(record["split"] for record in sampled_records)
+                ),
+                "log_exposure": dict(
+                    Counter(record["log_name"] for record in sampled_records)
+                ),
+                "demonstration_type_exposure": dict(
+                    Counter(
+                        record.get("demonstration_type", "normal")
+                        for record in sampled_records
+                    )
+                ),
+                "scenario_id_list": [record["scenario_id"] for record in sampled_records],
+                "actual_sampled_indices_logged": True,
+            }
+        )
+        return indices, metadata
+
+
 def _scenario_id(scenario: AbstractScenario) -> str:
     return str(getattr(scenario, "token", None) or getattr(scenario, "scenario_name", "unknown"))
+
+
+def _near_duplicate_groups(scenario: AbstractScenario, cell_width_s: float = 10.0) -> List[str]:
+    log_name = str(getattr(scenario, "log_name", "unknown_log"))
+    try:
+        start_s = float(scenario.get_time_point(0).time_s)
+        iteration_count = int(scenario.get_number_of_iterations())
+        end_s = float(scenario.get_time_point(max(0, iteration_count - 1)).time_s)
+        if end_s < start_s:
+            end_s = start_s
+    except Exception:
+        return [f"{log_name}:unavailable"]
+    first_cell = int(math.floor(start_s / cell_width_s))
+    last_cell = int(math.floor(max(start_s, end_s - 1e-9) / cell_width_s))
+    return [f"{log_name}:{cell}" for cell in range(first_cell, last_cell + 1)]
 
 
 def _sample_indices_with_repeat_cap(
@@ -315,6 +615,17 @@ def distributed_curriculum_sampler_init(
     hard_subtype_balance: bool = False,
     sampler_mode: str = "legacy_weighted",
     phase_name: str = "",
+    phase_start_epoch: int = 0,
+    curriculum_method: str = "",
+    demonstration_type_mode: str = "observe_only",
+    demonstration_type_metadata_path: Optional[str] = None,
+    demonstration_type_policy: Optional[Dict[str, Any]] = None,
+    max_repeat_per_near_duplicate_group: int = 0,
+    cumulative_exposure_state_path: Optional[str] = None,
+    max_cumulative_exposure_per_scenario: int = 0,
+    max_cumulative_exposure_per_near_duplicate_group: int = 0,
+    batch_size: int = 1,
+    accumulate_grad_batches: int = 1,
 ) -> WeightedRandomSampler:
     """
     Initialize WeightedSampler for curriculum learning with multiple splits.
@@ -333,12 +644,35 @@ def distributed_curriculum_sampler_init(
     # Normalize weights
     total_weight = sum(split_weights)
     normalized_weights = [w / total_weight for w in split_weights]
+
+    type_mode = validate_demonstration_type_routing(
+        demonstration_type_mode, curriculum_method
+    )
+    if type_mode == "enabled" and sampler_mode == "exact_bucket_quota":
+        raise ValueError(
+            "Demonstration-type routing currently requires legacy_weighted so its "
+            "stage-level expected exposure weights remain explicit"
+        )
     
     split_names = split_names or [f"split_{idx}" for idx in range(len(scenario_datasets))]
 
     sampler_mode = str(sampler_mode or "legacy_weighted")
     if sampler_mode not in {"legacy_weighted", "exact_bucket_quota"}:
         raise ValueError(f"Unsupported curriculum sampler_mode: {sampler_mode}")
+
+    scenario_records: List[Dict[str, Any]] = []
+    for split_name, dataset in zip(split_names, scenario_datasets):
+        for scenario in dataset._scenarios:
+            groups = _near_duplicate_groups(scenario)
+            scenario_records.append(
+                {
+                    "split": split_name,
+                    "scenario_id": _scenario_id(scenario),
+                    "near_duplicate_group": groups[0],
+                    "near_duplicate_groups": groups,
+                    "log_name": str(getattr(scenario, "log_name", "unknown_log")),
+                }
+            )
 
     if sampler_mode == "exact_bucket_quota":
         bucket_sizes = [len(dataset._scenarios) for dataset in scenario_datasets]
@@ -350,6 +684,14 @@ def distributed_curriculum_sampler_init(
             sampling_log_path=sampling_log_path,
             score_method=score_method,
             phase_name=phase_name,
+            phase_start_epoch=phase_start_epoch,
+            scenario_records=scenario_records,
+            max_repeat_per_group=max_repeat_per_near_duplicate_group,
+            cumulative_exposure_state_path=cumulative_exposure_state_path,
+            max_cumulative_exposure_per_scenario=max_cumulative_exposure_per_scenario,
+            max_cumulative_exposure_per_group=max_cumulative_exposure_per_near_duplicate_group,
+            batch_size=batch_size,
+            accumulate_grad_batches=accumulate_grad_batches,
         )
         distributed_weighted_sampler = DistributedSamplerWrapper(sampler)
         return distributed_weighted_sampler
@@ -358,15 +700,118 @@ def distributed_curriculum_sampler_init(
     # split_weights represent split-level sampling probabilities, not per-sample
     # weights.
     all_weights = []
-    scenario_records = []
     for split_name, dataset, weight in zip(split_names, scenario_datasets, normalized_weights):
         num_scenarios = len(dataset._scenarios)
         assert num_scenarios > 0, "Curriculum split dataset must not be empty"
         all_weights.extend([weight / num_scenarios] * num_scenarios)
-        for scenario in dataset._scenarios:
-            scenario_records.append({"split": split_name, "scenario_id": _scenario_id(scenario)})
+
+    type_metadata: Dict[str, Dict[str, Any]] = {}
+    type_draw_caps: Dict[str, int] = {}
+    if demonstration_type_metadata_path:
+        metadata_path = Path(demonstration_type_metadata_path)
+        if metadata_path.exists():
+            with metadata_path.open("r", encoding="utf-8", newline="") as stream:
+                for row in csv.DictReader(stream):
+                    scene_id = str(row.get("scene_id") or row.get("scenario_id") or "")
+                    if scene_id:
+                        type_metadata[scene_id] = row
+        elif type_mode == "enabled":
+            raise FileNotFoundError(f"Demonstration-type metadata not found: {metadata_path}")
+
+    if type_mode == "enabled":
+        policy = dict(demonstration_type_policy or {})
+        role = str(policy.get("stage_role", phase_name or "all_consolidation"))
+        presets = policy.get("stage_presets", {})
+        preset = dict(presets.get(role, presets.get("all_consolidation", {})))
+        multipliers = {
+            "normal": 1.0,
+            "necessary_exception": float(preset.get("necessary_exception_multiplier", 1.0)),
+            "expert_error": float(preset.get("expert_error_multiplier", 0.1)),
+            "uncertain": float(preset.get("uncertain_multiplier", 0.5)),
+        }
+        for index, record in enumerate(scenario_records):
+            meta = type_metadata.get(record["scenario_id"], {})
+            eligible = str(meta.get("type_routing_eligible", "")).strip().lower() in {"1", "true", "yes"}
+            demo_type = str(meta.get("demonstration_type", "normal")).strip().lower()
+            if not eligible:
+                demo_type = "normal"
+            all_weights[index] *= multipliers.get(demo_type, multipliers["uncertain"])
+            record["demonstration_type"] = demo_type
+            record["type_routing_eligible"] = eligible
+
+        group_sizes = Counter(
+            group
+            for record in scenario_records
+            for group in record["near_duplicate_groups"]
+        )
+        for index, record in enumerate(scenario_records):
+            all_weights[index] /= max(
+                1,
+                max(group_sizes[group] for group in record["near_duplicate_groups"]),
+            )
+
+        absolute_caps = {
+            "necessary_exception": float(preset.get("necessary_exception_absolute_cap", 1.0)),
+            "expert_error": float(preset.get("expert_error_absolute_cap", 1.0)),
+            "uncertain": float(preset.get("uncertain_absolute_cap", 0.05)),
+        }
+        for demo_type, cap in absolute_caps.items():
+            cap = min(1.0, max(0.0, cap))
+            indices = [
+                index
+                for index, record in enumerate(scenario_records)
+                if record.get("demonstration_type") == demo_type
+            ]
+            type_mass = sum(all_weights[index] for index in indices)
+            total_mass = sum(all_weights)
+            if indices and total_mass > 0 and type_mass / total_mass > cap:
+                other_mass = total_mass - type_mass
+                target_mass = (cap / max(1e-9, 1.0 - cap)) * other_mass if cap < 1.0 else type_mass
+                scale = target_mass / type_mass if type_mass > 0 else 0.0
+                for index in indices:
+                    all_weights[index] *= scale
+
+        # Normalize after orthogonal type weighting. Absolute caps are enforced
+        # conservatively by clipping per-scene weights relative to normal mass.
+        weight_sum = sum(all_weights)
+        if weight_sum <= 0:
+            raise ValueError("Demonstration-type policy produced zero sampling mass")
+        all_weights = [value / weight_sum for value in all_weights]
 
     num_samples = sum(len(d) for d in scenario_datasets)
+    if type_mode == "enabled":
+        type_draw_caps = {
+            demonstration_type: int(math.floor(num_samples * min(1.0, max(0.0, cap))))
+            for demonstration_type, cap in absolute_caps.items()
+        }
+    if max_repeat_per_near_duplicate_group > 0:
+        sampler = ExposureCappedWeightedSampler(
+            weights=all_weights,
+            scenario_records=scenario_records,
+            num_samples=num_samples,
+            max_repeat_per_scenario=max_repeat_per_scenario,
+            max_repeat_per_group=max_repeat_per_near_duplicate_group,
+            random_seed=random_seed,
+            cumulative_exposure_state_path=cumulative_exposure_state_path,
+            max_cumulative_exposure_per_scenario=max_cumulative_exposure_per_scenario,
+            max_cumulative_exposure_per_group=max_cumulative_exposure_per_near_duplicate_group,
+            sampling_log_path=sampling_log_path,
+            score_method=score_method,
+            phase_name=phase_name,
+            phase_start_epoch=phase_start_epoch,
+            batch_size=batch_size,
+            accumulate_grad_batches=accumulate_grad_batches,
+            max_exposure_per_demonstration_type=type_draw_caps,
+        )
+        return DistributedSamplerWrapper(sampler)
+    if (
+        cumulative_exposure_state_path
+        or max_cumulative_exposure_per_scenario > 0
+        or max_cumulative_exposure_per_near_duplicate_group > 0
+    ):
+        raise ValueError(
+            "Cumulative exposure controls require max_repeat_per_near_duplicate_group > 0"
+        )
     sampled_indices: Optional[List[int]] = None
     if max_repeat_per_scenario > 0:
         sampled_indices = _sample_indices_with_repeat_cap(
@@ -389,11 +834,27 @@ def distributed_curriculum_sampler_init(
             sampled_records = [scenario_records[index] for index in sampled_indices]
             sampled_split_counts = Counter(record["split"] for record in sampled_records)
             scenario_counts = Counter(record["scenario_id"] for record in sampled_records)
+            group_counts = Counter(
+                group
+                for record in sampled_records
+                for group in record["near_duplicate_groups"]
+            )
+            log_counts = Counter(record["log_name"] for record in sampled_records)
+            type_counts = Counter(record.get("demonstration_type", "normal") for record in sampled_records)
             duplicate_count = sum(1 for count in scenario_counts.values() if count > 1)
             max_repeat_count = max(scenario_counts.values()) if scenario_counts else 0
+            effective_sample_size = (
+                (sum(scenario_counts.values()) ** 2) / sum(count * count for count in scenario_counts.values())
+                if scenario_counts
+                else 0.0
+            )
             scenario_ids = [record["scenario_id"] for record in sampled_records]
         else:
             sampled_split_counts = {}
+            group_counts = {}
+            log_counts = {}
+            type_counts = {}
+            effective_sample_size = None
             duplicate_count = None
             max_repeat_count = None
             scenario_ids = []
@@ -406,7 +867,25 @@ def distributed_curriculum_sampler_init(
             "random_seed": random_seed,
             "replacement": replacement,
             "max_repeat_per_scenario": max_repeat_per_scenario,
+            "max_repeat_per_near_duplicate_group": max_repeat_per_near_duplicate_group,
+            "max_cumulative_exposure_per_scenario": max_cumulative_exposure_per_scenario,
+            "max_cumulative_exposure_per_near_duplicate_group": max_cumulative_exposure_per_near_duplicate_group,
+            "cumulative_exposure_state_path": cumulative_exposure_state_path,
             "hard_subtype_balance": hard_subtype_balance,
+            "curriculum_method": curriculum_method,
+            "demonstration_type_mode": type_mode,
+            "demonstration_type_metadata_path": demonstration_type_metadata_path,
+            "demonstration_type_pool_counts": dict(
+                Counter(record.get("demonstration_type", "normal") for record in scenario_records)
+            ),
+            "unique_log_count": len({record["log_name"] for record in scenario_records}),
+            "near_duplicate_group_count": len(
+                {
+                    group
+                    for record in scenario_records
+                    for group in record["near_duplicate_groups"]
+                }
+            ),
             "split_names": split_names,
             "sampling_weights": normalized_weights,
             "split_pool_counts": dict(split_pool_counts),
@@ -414,6 +893,10 @@ def distributed_curriculum_sampler_init(
             "hard_subtype_counts": {},
             "duplicated_scenario_count": duplicate_count,
             "max_repeat_count": max_repeat_count,
+            "near_duplicate_group_exposure": dict(group_counts),
+            "log_exposure": dict(log_counts),
+            "demonstration_type_exposure": dict(type_counts),
+            "effective_sample_size": effective_sample_size,
             "scenario_id_list": scenario_ids,
             "actual_sampled_indices_logged": sampled_indices is not None,
         }
@@ -456,6 +939,16 @@ class CustomDataModule(pl.LightningDataModule):
         hard_subtype_balance: bool = False,
         curriculum_sampler_mode: str = "legacy_weighted",
         curriculum_phase_name: str = "",
+        curriculum_phase_start_epoch: int = 0,
+        curriculum_method: str = "",
+        demonstration_type_mode: str = "observe_only",
+        demonstration_type_metadata_path: Optional[str] = None,
+        demonstration_type_policy: Optional[Dict[str, Any]] = None,
+        curriculum_max_repeat_per_near_duplicate_group: int = 0,
+        curriculum_cumulative_exposure_state_path: Optional[str] = None,
+        curriculum_max_cumulative_exposure_per_scenario: int = 0,
+        curriculum_max_cumulative_exposure_per_near_duplicate_group: int = 0,
+        curriculum_accumulate_grad_batches: int = 1,
     ) -> None:
         """
         Initialize the class.
@@ -518,6 +1011,24 @@ class CustomDataModule(pl.LightningDataModule):
         self._hard_subtype_balance = hard_subtype_balance
         self._curriculum_sampler_mode = curriculum_sampler_mode
         self._curriculum_phase_name = curriculum_phase_name
+        self._curriculum_phase_start_epoch = int(curriculum_phase_start_epoch)
+        self._curriculum_method = curriculum_method
+        self._demonstration_type_mode = demonstration_type_mode
+        self._demonstration_type_metadata_path = demonstration_type_metadata_path
+        self._demonstration_type_policy = demonstration_type_policy
+        self._curriculum_max_repeat_per_near_duplicate_group = int(
+            curriculum_max_repeat_per_near_duplicate_group
+        )
+        self._curriculum_cumulative_exposure_state_path = curriculum_cumulative_exposure_state_path
+        self._curriculum_max_cumulative_exposure_per_scenario = int(
+            curriculum_max_cumulative_exposure_per_scenario
+        )
+        self._curriculum_max_cumulative_exposure_per_near_duplicate_group = int(
+            curriculum_max_cumulative_exposure_per_near_duplicate_group
+        )
+        self._curriculum_accumulate_grad_batches = max(
+            1, int(curriculum_accumulate_grad_batches)
+        )
 
     @property
     def feature_and_targets_builder(self) -> FeaturePreprocessor:
@@ -641,6 +1152,17 @@ class CustomDataModule(pl.LightningDataModule):
                 hard_subtype_balance=bool(self._hard_subtype_balance),
                 sampler_mode=str(self._curriculum_sampler_mode or "legacy_weighted"),
                 phase_name=str(self._curriculum_phase_name or ""),
+                phase_start_epoch=self._curriculum_phase_start_epoch,
+                curriculum_method=str(self._curriculum_method or ""),
+                demonstration_type_mode=str(self._demonstration_type_mode or "observe_only"),
+                demonstration_type_metadata_path=self._demonstration_type_metadata_path,
+                demonstration_type_policy=self._demonstration_type_policy,
+                max_repeat_per_near_duplicate_group=self._curriculum_max_repeat_per_near_duplicate_group,
+                cumulative_exposure_state_path=self._curriculum_cumulative_exposure_state_path,
+                max_cumulative_exposure_per_scenario=self._curriculum_max_cumulative_exposure_per_scenario,
+                max_cumulative_exposure_per_near_duplicate_group=self._curriculum_max_cumulative_exposure_per_near_duplicate_group,
+                batch_size=int(self._dataloader_params.get("batch_size", 1)),
+                accumulate_grad_batches=self._curriculum_accumulate_grad_batches,
             )
             
             # Combine all datasets into one

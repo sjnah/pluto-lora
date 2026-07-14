@@ -1,0 +1,55 @@
+protocol_id: flat_area_matched_v1
+
+# One optimizer/scheduler trajectory is resumed across cumulative 4/8/12
+# Lightning boundaries. The LR-step integral matches the former 804-step
+# warmup-100 cosine schedule (LoRA peak 5e-5, terminal 1e-6).
+schedule:
+  type: warmup_constant
+  horizon_epochs: 12
+  warmup_steps: 32
+  lora_lr: 2.593849080532655e-5
+  head_lr: 5.18769816106531e-6
+  reference:
+    type: warmup_cosine
+    total_steps: 804
+    warmup_steps: 100
+    lora_peak_lr: 5.0e-5
+    lora_min_lr: 1.0e-6
+    lr_step_integral: 0.0204525
+
+optimizer:
+  # Controlled comparison contract: Uniform, RandomBucket, and LLM all reset
+  # Adam tensor moments at A -> B. Scheduler and Lightning loop state persist.
+  reset_boundaries:
+    - phase_a_to_b
+  weight_decay: 0.05
+
+phases:
+  cumulative_epochs:
+    a: 4
+    b: 8
+    c: 12
+  bucket_target_proportions:
+    a: [0.50, 0.40, 0.10]
+    b: [0.167, 0.333, 0.500]
+    c: [0.333333, 0.333333, 0.333334]
+
+lora:
+  enabled: true
+  rank: 4
+  alpha: 8.0
+  dropout: 0.05
+  ultra_minimal: true
+
+training:
+  base_lr: 1.0e-5
+  batch_size: 4
+  accumulate_grad_batches: 8
+  gradient_clip_val: 0.5
+  skip_nan_steps: true
+  remove_invalid_goals: false
+  num_sanity_val_steps: 0
+
+checkpoint:
+  require_protocol_match_on_resume: true
+

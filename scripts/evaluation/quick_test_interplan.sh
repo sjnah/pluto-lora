@@ -149,6 +149,8 @@ run_interplan_simulation() {
     local ckpt=$2
     local experiment=$3
     local eval_pythonpath="${PYTHONPATH:-}"
+    local simulation_log_overrides=()
+    is_enabled "${DISABLE_SIMULATION_LOG:-false}" && simulation_log_overrides=(callback=no_simulation_log)
 
     if [ "${PLUTO_EVAL_ALLOW_WANDB:-0}" != "1" ]; then
         eval_pythonpath="${WANDB_SHIM_ROOT}:${eval_pythonpath}"
@@ -172,6 +174,7 @@ run_interplan_simulation() {
         planner=pluto_planner \
         +planner.pluto_planner.planner_ckpt="$ckpt" \
         experiment_name="$experiment" \
+        "${simulation_log_overrides[@]}" \
         hydra.searchpath="[\
 pkg://interplan.planning.script.config.common,\
 pkg://interplan.planning.script.config.simulation,\
@@ -322,6 +325,10 @@ run_enabled_interplan_models() {
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_interplan_simulation "RandomBucket-FT${RANDOM_BUCKET_CURRICULUM_VERSION:+ (${RANDOM_BUCKET_CURRICULUM_VERSION})}" "$RANDOM_BUCKET_CURRICULUM_SLUG" "$RANDOM_BUCKET_CKPT" "$experiment_suffix"
     is_enabled "$RUN_LLM_CURRICULUM" && run_model_interplan_simulation "LLM-guided curriculum (${LLM_CURRICULUM_VERSION})" "$LLM_CURRICULUM_SLUG" "$CURRICULUM_CKPT" "$experiment_suffix"
     is_enabled "$RUN_MPOC" && run_model_interplan_simulation "MPOC curriculum${MPOC_CURRICULUM_VERSION:+ (${MPOC_CURRICULUM_VERSION})}" "$MPOC_CURRICULUM_SLUG" "$MPOC_CKPT" "$experiment_suffix"
+
+    # Disabled trailing methods must not turn a successful selected model into
+    # a false benchmark failure under the parent suite.
+    return 0
 }
 
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.

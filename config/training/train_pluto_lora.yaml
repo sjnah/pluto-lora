@@ -13,6 +13,7 @@ hydra:
     - file:///home/sjnah/Workspace/development/scene-intrinsic-difficulty/pluto/config
 
 defaults:
+  - /training_protocol: flat_area_matched_v1
   - /data_augmentation: contrastive_scenario_generator
   - /splitter: nuplan
   - /model: pluto_model
@@ -46,31 +47,44 @@ train_mode: uniform
 
 # LoRA configuration
 lora:
-  enabled: true
-  rank: 8
-  alpha: 16.0
-  dropout: 0.05
-  lora_lr: 1e-5
-  head_lr: 1e-5
-  policy_head_lr: 1e-5  # Alias for head_lr (backward compatibility)
-  ultra_minimal: true
+  enabled: ${training_protocol.lora.enabled}
+  rank: ${training_protocol.lora.rank}
+  alpha: ${training_protocol.lora.alpha}
+  dropout: ${training_protocol.lora.dropout}
+  lora_lr: ${training_protocol.schedule.lora_lr}
+  head_lr: ${training_protocol.schedule.head_lr}
+  policy_head_lr: ${training_protocol.schedule.head_lr}  # Alias for head_lr
+  ultra_minimal: ${training_protocol.lora.ultra_minimal}
   trainable_modules: []
+  # Clear Adam moments at a selected resume boundary while preserving the
+  # scheduler and Lightning loop progress. Percentile-EHU enables this only
+  # for the Phase A -> B transition.
+  reset_optimizer_moments_on_resume: false
+  # Final cumulative epoch boundary for a scheduler shared across resumed
+  # processes. Null preserves the ordinary single-process behavior.
+  scheduler_horizon_epochs: ${training_protocol.schedule.horizon_epochs}
+  scheduler_type: ${training_protocol.schedule.type}
+  training_protocol_id: ${training_protocol.protocol_id}
+  training_protocol_sha256: ""
+  curriculum_method_id: ""
+  curriculum_method_sha256: ""
+  require_protocol_match_on_resume: false
   save_merged: true
   use_collision_loss: true
   use_contrast_loss: false
   regulate_yaw: false
 
 # Training hyperparameters
-lr: 1e-5
-weight_decay: 0.01
-epochs: 5
+lr: ${training_protocol.training.base_lr}
+weight_decay: ${training_protocol.optimizer.weight_decay}
+epochs: ${training_protocol.phases.cumulative_epochs.c}
 warmup_epochs: 0
-warmup_steps: 300
+warmup_steps: ${training_protocol.schedule.warmup_steps}
 
 # Training stability
-gradient_clip_val: 1.0
-skip_nan_steps: true
-remove_invalid_goals: false
+gradient_clip_val: ${training_protocol.training.gradient_clip_val}
+skip_nan_steps: ${training_protocol.training.skip_nan_steps}
+remove_invalid_goals: ${training_protocol.training.remove_invalid_goals}
 
 # Loss weights configuration
 # These weights control the relative importance of different loss components
@@ -99,6 +113,35 @@ data_splits:
 
 # Curriculum fine-tuning configuration
 curriculum:
+  # SSG/judge v4 demonstration types are observe-only until a human precision
+  # audit enables routing. The sampler rejects enabled routing for non-LLM-v4 methods.
+  method: ${oc.env:CURRICULUM_METHOD,legacy}
+  demonstration_type_mode: ${oc.env:DEMONSTRATION_TYPE_MODE,observe_only}
+  demonstration_type_metadata_path: ${oc.env:DEMONSTRATION_TYPE_METADATA_PATH,null}
+  demonstration_type_policy:
+    stage_role: ${oc.env:CURRICULUM_STAGE_ROLE,all_consolidation}
+    stage_presets:
+      easy_oriented:
+        necessary_exception_multiplier: 1.0
+        necessary_exception_absolute_cap: 0.05
+        expert_error_multiplier: 0.1
+        expert_error_absolute_cap: 0.005
+        uncertain_multiplier: 0.5
+        uncertain_absolute_cap: 0.05
+      hard_oriented:
+        necessary_exception_multiplier: 2.0
+        necessary_exception_absolute_cap: 0.10
+        expert_error_multiplier: 0.1
+        expert_error_absolute_cap: 0.005
+        uncertain_multiplier: 0.5
+        uncertain_absolute_cap: 0.05
+      all_consolidation:
+        necessary_exception_multiplier: 1.25
+        necessary_exception_absolute_cap: 0.075
+        expert_error_multiplier: 0.25
+        expert_error_absolute_cap: 0.01
+        uncertain_multiplier: 0.5
+        uncertain_absolute_cap: 0.05
   # Total steps in uniform FT (for alignment)
   uniform_total_steps: 10000
 
@@ -120,13 +163,21 @@ curriculum:
     stage3: [0.25, 0.35, 0.40]
   replacement: true
   max_repeat_per_scenario: 4
+  # Disabled in the generic config. The LLM-v4 runner enables these only for
+  # its own experiment after a pool-capacity preflight.
+  max_repeat_per_near_duplicate_group: 0
+  cumulative_exposure_state_path: null
+  max_cumulative_exposure_per_scenario: 0
+  max_cumulative_exposure_per_near_duplicate_group: 0
   hard_subtype_balance: false
   hard_subtype_cap: 0.60
   random_seed: ${seed}
   sampling_log_path: null
   filter_file_path: null
   
-  # Whether to reset optimizer state between stages
+  # Legacy in-process CurriculumController option. The canonical multi-process
+  # LoRA runner does not read this field; reset boundaries live in the selected
+  # training_protocol YAML and are passed through lora.reset_optimizer_moments_on_resume.
   reset_optimizer_each_stage: false
   
   # Stage configurations

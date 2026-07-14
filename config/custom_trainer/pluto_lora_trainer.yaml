@@ -18,6 +18,14 @@ policy_head_lr: ${lora.policy_head_lr}
 trainable_modules: ${lora.trainable_modules}
 ultra_minimal: ${lora.ultra_minimal}
 is_curriculum_stage: ${oc.select:lora.is_curriculum_stage,false}
+reset_optimizer_moments_on_resume: ${oc.select:lora.reset_optimizer_moments_on_resume,false}
+scheduler_horizon_epochs: ${oc.select:lora.scheduler_horizon_epochs,null}
+scheduler_type: ${oc.select:lora.scheduler_type,warmup_cosine}
+training_protocol_id: ${oc.select:lora.training_protocol_id,""}
+training_protocol_sha256: ${oc.select:lora.training_protocol_sha256,""}
+curriculum_method_id: ${oc.select:lora.curriculum_method_id,""}
+curriculum_method_sha256: ${oc.select:lora.curriculum_method_sha256,""}
+require_protocol_match_on_resume: ${oc.select:lora.require_protocol_match_on_resume,false}
 
 # Stability controls
 gradient_clip_val: ${gradient_clip_val}

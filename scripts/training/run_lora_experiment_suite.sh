@@ -1,7 +1,8 @@
 #!/bin/bash
-# Sequential PLUTO LoRA experiment launcher.
+# Sequential PLUTO LoRA experiment launcher. Defaults are resolved from
+# EXPERIMENT_SUITE_CONFIG; environment variables are one-run overrides.
 #
-# Edit the RUN_* and *_VERSION block below, then run:
+# Run:
 #   bash scripts/training/run_lora_experiment_suite.sh
 
 set -e
@@ -10,28 +11,41 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
-PERCENTILE_EHU_SCRIPT="${SCRIPT_DIR}/run_lora_experiment_percentile_ehu.sh"
-UNIFORM_SCRIPT="${SCRIPT_DIR}/run_lora_experiment_uniform.sh"
+LORA_EXPERIMENT_SCRIPT="${SCRIPT_DIR}/run_lora_experiment.sh"
+CONFIG_RESOLVER="${SCRIPT_DIR}/resolve_lora_experiment_config.py"
+EXPERIMENT_SUITE_CONFIG="${EXPERIMENT_SUITE_CONFIG:-${REPO_ROOT}/config/experiment_suite/flat_lr_comparison_v1.yaml}"
 
-# Method switches. Disabled by default to avoid accidental long training runs.
-export RUN_LLM="${RUN_LLM:-true}"
-export RUN_RULE="${RUN_RULE:-true}"
-export RUN_LOSS="${RUN_LOSS:-true}"
-export RUN_RANDOM_BUCKET="${RUN_RANDOM_BUCKET:-true}"
-export RUN_MPOC="${RUN_MPOC:-true}"
-export RUN_UNIFORM="${RUN_UNIFORM:-true}"
+eval "$(python3 "$CONFIG_RESOLVER" --suite "$EXPERIMENT_SUITE_CONFIG" --format shell)"
+TRAINING_PROTOCOL_CONFIG="${TRAINING_PROTOCOL_CONFIG:-$CFG_SUITE_TRAINING_PROTOCOL}"
+eval "$(python3 "$CONFIG_RESOLVER" \
+    --protocol "$TRAINING_PROTOCOL_CONFIG" \
+    --method "${REPO_ROOT}/config/curriculum_method/llm.yaml" \
+    --format shell)"
+TRAINING_PROTOCOL_ID="$CFG_PROTOCOL_ID"
+
+# Method switches from the selected suite.
+export RUN_LLM="${RUN_LLM:-$CFG_SUITE_RUN_LLM}"
+export RUN_RULE="${RUN_RULE:-$CFG_SUITE_RUN_RULE}"
+export RUN_LOSS="${RUN_LOSS:-$CFG_SUITE_RUN_LOSS}"
+export RUN_RANDOM_BUCKET="${RUN_RANDOM_BUCKET:-$CFG_SUITE_RUN_RANDOM}"
+export RUN_MPOC="${RUN_MPOC:-$CFG_SUITE_RUN_MPOC}"
+export RUN_UNIFORM="${RUN_UNIFORM:-$CFG_SUITE_RUN_UNIFORM}"
 
 # Method versions. These feed CURRICULUM_VERSION for percentile-EHU methods.
-export LLM_VERSION="${LLM_VERSION:-v4.1.3.2.12}"
-export RULE_VERSION="${RULE_VERSION:-v3.12}"
-export LOSS_VERSION="${LOSS_VERSION:-v1.12}"
-export RANDOM_BUCKET_VERSION="${RANDOM_BUCKET_VERSION:-v1.12}"
-export MPOC_VERSION="${MPOC_VERSION:-v1.12}"
-export UNIFORM_VERSION="${UNIFORM_VERSION:-v1.12}"
+export LLM_VERSION="${LLM_VERSION:-$CFG_SUITE_LLM_VERSION}"
+export RULE_VERSION="${RULE_VERSION:-$CFG_SUITE_RULE_VERSION}"
+export LOSS_VERSION="${LOSS_VERSION:-$CFG_SUITE_LOSS_VERSION}"
+export RANDOM_BUCKET_VERSION="${RANDOM_BUCKET_VERSION:-$CFG_SUITE_RANDOM_VERSION}"
+export MPOC_VERSION="${MPOC_VERSION:-$CFG_SUITE_MPOC_VERSION}"
+export UNIFORM_VERSION="${UNIFORM_VERSION:-$CFG_SUITE_UNIFORM_VERSION}"
 
 # Optional controls.
-export CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-false}"
+export CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-$CFG_SUITE_CONTINUE_ON_FAILURE}"
 export DRY_RUN="${DRY_RUN:-false}"
+export TYPE_ROUTING_MODE="${TYPE_ROUTING_MODE:-$CFG_SUITE_TYPE_ROUTING_MODE}"
+export RUN_LLM_TYPE_ROUTING_COMPARISON="${RUN_LLM_TYPE_ROUTING_COMPARISON:-false}"
+export LLM_TYPE_ROUTING_OFF_BASE_EXP="${LLM_TYPE_ROUTING_OFF_BASE_EXP:-curriculum_lora_llm_percentile_ehu_${LLM_VERSION}_${TRAINING_PROTOCOL_ID}_type_off}"
+export LLM_TYPE_ROUTING_ON_BASE_EXP="${LLM_TYPE_ROUTING_ON_BASE_EXP:-curriculum_lora_llm_percentile_ehu_${LLM_VERSION}_${TRAINING_PROTOCOL_ID}_type_on}"
 
 is_enabled() {
     case "$1" in
@@ -58,6 +72,8 @@ run_percentile_ehu_method() {
     local version="$4"
     local base_exp_var="$5"
     local filter_prefix_var="$6"
+    local type_routing_mode="${7:-off}"
+    local sampler_mode_override="${8:-}"
 
     if ! is_enabled "$flag_value"; then
         return 0
@@ -72,7 +88,8 @@ run_percentile_ehu_method() {
         echo "=============================================="
         echo "$command_label"
         echo "=============================================="
-        echo "DRY_RUN: METHOD=${method} METHOD_LABEL=${label} CURRICULUM_VERSION=${version} bash ${PERCENTILE_EHU_SCRIPT}"
+        echo "DRY_RUN: METHOD=${method} METHOD_LABEL=${label} CURRICULUM_VERSION=${version} TRAINING_PROTOCOL_CONFIG=${TRAINING_PROTOCOL_CONFIG} bash ${LORA_EXPERIMENT_SCRIPT}"
+        echo "         TYPE_ROUTING_MODE=${type_routing_mode}${sampler_mode_override:+ SAMPLER_MODE=${sampler_mode_override}}"
         [ -n "$base_exp" ] && echo "         CURRICULUM_BASE_EXP=${base_exp}"
         [ -n "$filter_prefix" ] && echo "         FILTER_PREFIX=${filter_prefix}"
         return 0
@@ -92,7 +109,10 @@ run_percentile_ehu_method() {
         export METHOD="$method"
         export METHOD_LABEL="$label"
         export CURRICULUM_VERSION="$version"
-        bash "$PERCENTILE_EHU_SCRIPT"
+        export TRAINING_PROTOCOL_CONFIG
+        export TYPE_ROUTING_MODE="$type_routing_mode"
+        [ -n "$sampler_mode_override" ] && export SAMPLER_MODE="$sampler_mode_override"
+        bash "$LORA_EXPERIMENT_SCRIPT"
     )
     local status=$?
     set -e
@@ -115,7 +135,7 @@ run_uniform_method() {
         echo "=============================================="
         echo "Uniform FT (${UNIFORM_VERSION})"
         echo "=============================================="
-        echo "DRY_RUN: UNIFORM_CURRICULUM_VERSION=${UNIFORM_VERSION} bash ${UNIFORM_SCRIPT}"
+        echo "DRY_RUN: METHOD=uniform CURRICULUM_VERSION=${UNIFORM_VERSION} TRAINING_PROTOCOL_CONFIG=${TRAINING_PROTOCOL_CONFIG} bash ${LORA_EXPERIMENT_SCRIPT}"
         [ -n "${UNIFORM_CURRICULUM_BASE_EXP:-}" ] && echo "         CURRICULUM_BASE_EXP=${UNIFORM_CURRICULUM_BASE_EXP}"
         return 0
     fi
@@ -129,8 +149,10 @@ run_uniform_method() {
         set -e
         unset CURRICULUM_BASE_EXP
         [ -n "${UNIFORM_CURRICULUM_BASE_EXP:-}" ] && export CURRICULUM_BASE_EXP="$UNIFORM_CURRICULUM_BASE_EXP"
-        export UNIFORM_CURRICULUM_VERSION="$UNIFORM_VERSION"
-        bash "$UNIFORM_SCRIPT"
+        export METHOD=uniform
+        export CURRICULUM_VERSION="$UNIFORM_VERSION"
+        export TRAINING_PROTOCOL_CONFIG
+        bash "$LORA_EXPERIMENT_SCRIPT"
     )
     local status=$?
     set -e
@@ -149,6 +171,8 @@ if [ "$(count_enabled_methods)" -eq 0 ]; then
 fi
 
 echo "PLUTO LoRA experiment suite"
+echo "Suite: ${CFG_SUITE_ID} (${CFG_SUITE_PATH})"
+echo "Training protocol: ${TRAINING_PROTOCOL_ID} (${TRAINING_PROTOCOL_CONFIG})"
 echo "Enabled methods:"
 is_enabled "$RUN_LLM" && echo "  LLM:           ${LLM_VERSION}"
 is_enabled "$RUN_RULE" && echo "  Rule:          ${RULE_VERSION}"
@@ -157,7 +181,19 @@ is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket:  ${RANDOM_BUCKET_VERSIO
 is_enabled "$RUN_MPOC" && echo "  MPOC:          ${MPOC_VERSION}"
 is_enabled "$RUN_UNIFORM" && echo "  Uniform:       ${UNIFORM_VERSION}"
 
-run_percentile_ehu_method "$RUN_LLM" llm "LLM-guided" "$LLM_VERSION" LLM_CURRICULUM_BASE_EXP LLM_FILTER_PREFIX
+if is_enabled "$RUN_LLM" && is_enabled "$RUN_LLM_TYPE_ROUTING_COMPARISON"; then
+    run_percentile_ehu_method "$RUN_LLM" llm "LLM-guided type-off" "$LLM_VERSION" LLM_TYPE_ROUTING_OFF_BASE_EXP LLM_FILTER_PREFIX off legacy_weighted
+    run_percentile_ehu_method "$RUN_LLM" llm "LLM-guided type-on" "$LLM_VERSION" LLM_TYPE_ROUTING_ON_BASE_EXP LLM_FILTER_PREFIX on legacy_weighted
+else
+    case "${TYPE_ROUTING_MODE:-off}" in
+        on|enabled)
+            run_percentile_ehu_method "$RUN_LLM" llm "LLM-guided type-on" "$LLM_VERSION" LLM_TYPE_ROUTING_ON_BASE_EXP LLM_FILTER_PREFIX on legacy_weighted
+            ;;
+        *)
+            run_percentile_ehu_method "$RUN_LLM" llm "LLM-guided" "$LLM_VERSION" LLM_CURRICULUM_BASE_EXP LLM_FILTER_PREFIX off
+            ;;
+    esac
+fi
 run_percentile_ehu_method "$RUN_RULE" rule "Rule-based" "$RULE_VERSION" RULE_CURRICULUM_BASE_EXP RULE_FILTER_PREFIX
 run_percentile_ehu_method "$RUN_LOSS" loss "Loss-ranked" "$LOSS_VERSION" LOSS_CURRICULUM_BASE_EXP LOSS_FILTER_PREFIX
 run_percentile_ehu_method "$RUN_RANDOM_BUCKET" random "RandomBucket" "$RANDOM_BUCKET_VERSION" RANDOM_BUCKET_CURRICULUM_BASE_EXP RANDOM_BUCKET_FILTER_PREFIX

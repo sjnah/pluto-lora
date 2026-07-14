@@ -244,6 +244,26 @@ def build_lightning_datamodule(
         hard_subtype_balance=bool(curriculum_cfg.get("hard_subtype_balance", False)),
         curriculum_sampler_mode=str(curriculum_cfg.get("sampler_mode", "legacy_weighted")),
         curriculum_phase_name=str(curriculum_cfg.get("phase_name", "")),
+        curriculum_phase_start_epoch=int(curriculum_cfg.get("phase_start_epoch", 0)),
+        curriculum_method=str(curriculum_cfg.get("method", "")),
+        demonstration_type_mode=str(curriculum_cfg.get("demonstration_type_mode", "observe_only")),
+        demonstration_type_metadata_path=curriculum_cfg.get("demonstration_type_metadata_path", None),
+        demonstration_type_policy=curriculum_cfg.get("demonstration_type_policy", None),
+        curriculum_max_repeat_per_near_duplicate_group=int(
+            curriculum_cfg.get("max_repeat_per_near_duplicate_group", 0)
+        ),
+        curriculum_cumulative_exposure_state_path=curriculum_cfg.get(
+            "cumulative_exposure_state_path", None
+        ),
+        curriculum_max_cumulative_exposure_per_scenario=int(
+            curriculum_cfg.get("max_cumulative_exposure_per_scenario", 0)
+        ),
+        curriculum_max_cumulative_exposure_per_near_duplicate_group=int(
+            curriculum_cfg.get("max_cumulative_exposure_per_near_duplicate_group", 0)
+        ),
+        curriculum_accumulate_grad_batches=int(
+            cfg.lightning.trainer.params.get("accumulate_grad_batches", 1)
+        ),
         **cfg.data_loader.datamodule,
     )
 

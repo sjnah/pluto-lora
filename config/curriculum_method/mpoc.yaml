@@ -1,0 +1,14 @@
+method: mpoc
+label: MPOC
+mode: bucketed
+filter_prefix: mpoc_percentile_ehu
+score_method: mpoc
+curriculum_method: legacy
+sampler_mode: exact_bucket_quota
+max_repeat_per_scenario: 4
+hard_subtype_balance: false
+tie_break_mode: stable_hash
+bucketization_mode: percentile_tercile
+phase_names: {a: easy_warmup, b: mild_hard_focus, c: uniform_consolidation}
+exposure: {persistent: false, max_repeat_per_near_duplicate_group: 0, max_cumulative_exposure_per_scenario: 0, max_cumulative_exposure_per_near_duplicate_group: 0}
+

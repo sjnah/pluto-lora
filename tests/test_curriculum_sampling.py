@@ -14,10 +14,17 @@ sys.modules[spec.name] = curriculum_sampling
 spec.loader.exec_module(curriculum_sampling)
 
 build_exact_bucket_quota_indices = curriculum_sampling.build_exact_bucket_quota_indices
+build_exposure_capped_bucket_quota_indices = (
+    curriculum_sampling.build_exposure_capped_bucket_quota_indices
+)
+build_exposure_capped_weighted_indices = (
+    curriculum_sampling.build_exposure_capped_weighted_indices
+)
 exact_tercile_counts = curriculum_sampling.exact_tercile_counts
 largest_remainder_counts = curriculum_sampling.largest_remainder_counts
 split_scores_into_terciles = curriculum_sampling.split_scores_into_terciles
 validate_master_score_coverage = curriculum_sampling.validate_master_score_coverage
+validate_demonstration_type_routing = curriculum_sampling.validate_demonstration_type_routing
 
 
 class TestPercentileTerciles(unittest.TestCase):
@@ -125,6 +132,98 @@ class TestExactQuotaSampler(unittest.TestCase):
         third, _ = build_exact_bucket_quota_indices(epoch=1, **kwargs)
         self.assertEqual(first, second)
         self.assertNotEqual(first, third)
+
+
+class TestDemonstrationTypeRoutingGuard(unittest.TestCase):
+    def test_observe_only_never_requires_llm_method(self):
+        self.assertEqual(
+            validate_demonstration_type_routing("observe_only", "rule"),
+            "observe_only",
+        )
+
+    def test_enabled_is_llm_v4_only(self):
+        self.assertEqual(
+            validate_demonstration_type_routing("enabled", "llm_guided_v4"),
+            "enabled",
+        )
+        with self.assertRaises(ValueError):
+            validate_demonstration_type_routing("enabled", "mpoc")
+
+
+class TestExposureCappedExactQuota(unittest.TestCase):
+    def _metadata(self):
+        scenario_ids = [f"scene_{index}" for index in range(12)]
+        groups = [[f"cell_{index // 2}"] for index in range(12)]
+        return scenario_ids, groups
+
+    def test_exact_quota_respects_temporal_cell_cap(self):
+        scenario_ids, groups = self._metadata()
+        indices, metadata = build_exposure_capped_bucket_quota_indices(
+            [4, 4, 4],
+            [1 / 3, 1 / 3, 1 / 3],
+            scenario_ids=scenario_ids,
+            near_duplicate_groups=groups,
+            max_repeat_per_scenario=2,
+            max_repeat_per_group=2,
+            seed=42,
+            epoch=0,
+        )
+        self.assertEqual(len(indices), 12)
+        self.assertEqual(metadata["actual_draws"], {"easy": 4, "medium": 4, "hard": 4})
+        self.assertLessEqual(metadata["max_near_duplicate_group_exposure"], 2)
+
+    def test_cumulative_cap_excludes_exhausted_scenario(self):
+        scenario_ids = [f"scene_{index}" for index in range(6)]
+        groups = [[f"cell_{index}"] for index in range(6)]
+        indices, metadata = build_exposure_capped_bucket_quota_indices(
+            [2, 2, 2],
+            [1 / 3, 1 / 3, 1 / 3],
+            scenario_ids=scenario_ids,
+            near_duplicate_groups=groups,
+            max_repeat_per_scenario=2,
+            max_repeat_per_group=2,
+            prior_scenario_exposure={"scene_0": 2},
+            max_cumulative_exposure_per_scenario=2,
+            seed=7,
+            epoch=1,
+        )
+        self.assertNotIn(0, indices)
+        self.assertEqual(metadata["actual_draws"]["easy"], 2)
+
+    def test_impossible_group_cap_fails_instead_of_silent_oversampling(self):
+        scenario_ids = [f"scene_{index}" for index in range(6)]
+        groups = [["one_cell"] for _ in scenario_ids]
+        with self.assertRaisesRegex(ValueError, "Exposure caps make exact quota impossible"):
+            build_exposure_capped_bucket_quota_indices(
+                [2, 2, 2],
+                [1 / 3, 1 / 3, 1 / 3],
+                scenario_ids=scenario_ids,
+                near_duplicate_groups=groups,
+                max_repeat_per_scenario=2,
+                max_repeat_per_group=2,
+                seed=0,
+                epoch=0,
+            )
+
+    def test_weighted_draw_respects_scenario_and_group_caps(self):
+        scenario_ids = [f"scene_{index}" for index in range(6)]
+        groups = [[f"cell_{index}"] for index in range(6)]
+        indices, metadata = build_exposure_capped_weighted_indices(
+            [10.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            scenario_ids=scenario_ids,
+            near_duplicate_groups=groups,
+            num_samples=6,
+            max_repeat_per_scenario=2,
+            max_repeat_per_group=2,
+            category_ids=["special", "special", "normal", "normal", "normal", "normal"],
+            max_exposure_per_category={"special": 1},
+            seed=3,
+            epoch=0,
+        )
+        self.assertEqual(len(indices), 6)
+        self.assertLessEqual(metadata["max_scenario_exposure"], 2)
+        self.assertLessEqual(metadata["max_near_duplicate_group_exposure"], 2)
+        self.assertLessEqual(metadata["category_exposure"].get("special", 0), 1)
 
 
 if __name__ == "__main__":
