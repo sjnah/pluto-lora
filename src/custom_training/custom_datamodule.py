@@ -330,6 +330,8 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
         accumulate_grad_batches: int = 1,
         max_exposure_per_demonstration_type: Optional[Dict[str, int]] = None,
         pacing_schedule: Optional[Dict[str, Any]] = None,
+        split_names: Optional[List[str]] = None,
+        base_target_proportions: Optional[List[float]] = None,
     ):
         if (
             max_cumulative_exposure_per_scenario > 0
@@ -341,6 +343,19 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
         self._max_exposure_per_demonstration_type = dict(
             max_exposure_per_demonstration_type or {}
         )
+        self._split_names = list(split_names or [])
+        self._base_target_proportions = [
+            float(value) for value in (base_target_proportions or [])
+        ]
+        if pacing_schedule:
+            if not self._split_names or not self._base_target_proportions:
+                raise ValueError(
+                    "Weighted pacing requires split_names and base_target_proportions"
+                )
+            if len(self._split_names) != len(self._base_target_proportions):
+                raise ValueError(
+                    "Weighted pacing split names and target proportions must align"
+                )
         super().__init__(
             bucket_sizes=[self._num_samples],
             target_proportions=[1.0],
@@ -366,13 +381,45 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
             "weights": self._weights,
             "num_samples": self._num_samples,
             "max_exposure_per_demonstration_type": self._max_exposure_per_demonstration_type,
+            "split_names": self._split_names,
+            "base_target_proportions": self._base_target_proportions,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
     def _build_indices(self, epoch: int, prior_scenario=None, prior_group=None):
+        weights = self._weights
+        pacing_metadata: Dict[str, Any] = {}
+        resolved_proportions: List[float] = []
+        if self._pacing_schedule:
+            resolved_proportions, pacing_metadata = scheduled_target_proportions(
+                self._base_target_proportions,
+                self._pacing_schedule,
+                epoch=epoch,
+                phase_start_epoch=self._phase_start_epoch,
+            )
+            split_masses = {
+                split_name: sum(
+                    weight
+                    for weight, record in zip(self._weights, self._scenario_records)
+                    if record.get("split") == split_name
+                )
+                for split_name in self._split_names
+            }
+            if any(mass <= 0.0 for mass in split_masses.values()):
+                raise ValueError(
+                    f"Weighted pacing encountered an empty split mass: {split_masses}"
+                )
+            target_by_split = dict(zip(self._split_names, resolved_proportions))
+            weights = [
+                weight
+                * target_by_split[str(record.get("split"))]
+                / split_masses[str(record.get("split"))]
+                for weight, record in zip(self._weights, self._scenario_records)
+            ]
+
         indices, metadata = build_exposure_capped_weighted_indices(
-            self._weights,
+            weights,
             scenario_ids=[record["scenario_id"] for record in self._scenario_records],
             near_duplicate_groups=[
                 record["near_duplicate_groups"] for record in self._scenario_records
@@ -409,6 +456,10 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
                 ),
                 "scenario_id_list": [record["scenario_id"] for record in sampled_records],
                 "actual_sampled_indices_logged": True,
+                "base_target_proportions": self._base_target_proportions,
+                "resolved_target_proportions": resolved_proportions,
+                "pacing_schedule": self._pacing_schedule,
+                "pacing": pacing_metadata,
             }
         )
         return indices, metadata
@@ -676,8 +727,14 @@ def distributed_curriculum_sampler_init(
     sampler_mode = str(sampler_mode or "legacy_weighted")
     if sampler_mode not in {"legacy_weighted", "exact_bucket_quota"}:
         raise ValueError(f"Unsupported curriculum sampler_mode: {sampler_mode}")
-    if pacing_schedule and sampler_mode != "exact_bucket_quota":
-        raise ValueError("curriculum pacing_schedule currently requires exact_bucket_quota")
+    if (
+        pacing_schedule
+        and sampler_mode == "legacy_weighted"
+        and max_repeat_per_near_duplicate_group <= 0
+    ):
+        raise ValueError(
+            "legacy_weighted pacing requires the exposure-capped epoch-aware sampler"
+        )
 
     scenario_records: List[Dict[str, Any]] = []
     for split_name, dataset in zip(split_names, scenario_datasets):
@@ -822,6 +879,9 @@ def distributed_curriculum_sampler_init(
             batch_size=batch_size,
             accumulate_grad_batches=accumulate_grad_batches,
             max_exposure_per_demonstration_type=type_draw_caps,
+            pacing_schedule=pacing_schedule,
+            split_names=split_names,
+            base_target_proportions=normalized_weights,
         )
         return DistributedSamplerWrapper(sampler)
     if (

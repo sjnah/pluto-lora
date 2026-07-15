@@ -60,8 +60,14 @@ def list_literal(values: object, label: str) -> str:
     return "[" + ",".join(f"{value:.12g}" for value in numbers) + "]"
 
 
-def json_literal(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+def hydra_literal(value: object) -> str:
+    """Serialize a value with Hydra override-compatible flow YAML syntax."""
+    return yaml.safe_dump(
+        value,
+        default_flow_style=True,
+        sort_keys=True,
+        width=1_000_000,
+    ).strip()
 
 
 def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, Any]:
@@ -143,9 +149,9 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_PHASE_C_TARGET_PROPORTIONS": list_literal(
             proportions["c"], "phase C proportions"
         ),
-        "CFG_PHASE_A_PACING_SCHEDULE": json_literal(phase_alpha.get("a") or {}),
-        "CFG_PHASE_B_PACING_SCHEDULE": json_literal(phase_alpha.get("b") or {}),
-        "CFG_PHASE_C_PACING_SCHEDULE": json_literal(phase_alpha.get("c") or {}),
+        "CFG_PHASE_A_PACING_SCHEDULE": hydra_literal(phase_alpha.get("a") or {}),
+        "CFG_PHASE_B_PACING_SCHEDULE": hydra_literal(phase_alpha.get("b") or {}),
+        "CFG_PHASE_C_PACING_SCHEDULE": hydra_literal(phase_alpha.get("c") or {}),
         "CFG_LORA_ENABLED": bool(lora["enabled"]),
         "CFG_LORA_RANK": int(lora["rank"]),
         "CFG_LORA_ALPHA": float(lora["alpha"]),

@@ -151,6 +151,55 @@ class TestPersistentCurriculumExposureState(unittest.TestCase):
                 latest["demonstration_type_exposure"].get("necessary_exception", 0), 1
             )
 
+    def test_weighted_type_routing_sampler_applies_hard_ramp_pacing(self):
+        split_names = ["easy", "medium", "hard"]
+        records = [
+            {
+                "scenario_id": f"scene_{index}",
+                "near_duplicate_groups": [f"group_{index}"],
+                "split": split_names[index // 30],
+                "log_name": f"log_{index}",
+                "demonstration_type": "normal",
+            }
+            for index in range(90)
+        ]
+        sampler = ExposureCappedWeightedSampler(
+            weights=[1.0 / 90.0] * 90,
+            scenario_records=records,
+            num_samples=90,
+            max_repeat_per_scenario=4,
+            max_repeat_per_group=4,
+            random_seed=17,
+            cumulative_exposure_state_path=None,
+            max_cumulative_exposure_per_scenario=0,
+            max_cumulative_exposure_per_group=0,
+            phase_name="hard_ramp",
+            phase_start_epoch=2,
+            pacing_schedule={
+                "type": "hard_replay_ramp",
+                "alpha_start": 0.0,
+                "alpha_end": 0.8,
+                "ramp_epochs": 4,
+            },
+            split_names=split_names,
+            base_target_proportions=[1 / 3, 1 / 3, 1 / 3],
+        )
+
+        _, start_metadata = sampler._build_indices(2)
+        _, end_metadata = sampler._build_indices(5)
+
+        self.assertAlmostEqual(start_metadata["pacing"]["alpha"], 0.0)
+        self.assertAlmostEqual(end_metadata["pacing"]["alpha"], 0.8)
+        for actual, expected in zip(
+            end_metadata["resolved_target_proportions"],
+            [1 / 15, 1 / 15, 13 / 15],
+        ):
+            self.assertAlmostEqual(actual, expected)
+        self.assertGreater(
+            end_metadata["sampled_split_counts"]["hard"],
+            start_metadata["sampled_split_counts"]["hard"],
+        )
+
     def test_pre_resume_preflight_does_not_persist_exposure_or_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

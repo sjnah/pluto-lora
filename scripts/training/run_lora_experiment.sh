@@ -35,6 +35,7 @@ METHOD_SHA256="$CFG_METHOD_SHA256"
 METHOD_LABEL="${METHOD_LABEL:-$CFG_METHOD_LABEL}"
 CURRICULUM_VERSION="${CURRICULUM_VERSION:-unversioned}"
 DRY_RUN="${DRY_RUN:-false}"
+START_PHASE="${START_PHASE:-a}"
 PERCENTILE_SPLIT_SEED="${PERCENTILE_SPLIT_SEED:-42}"
 SAMPLER_SEED="${SAMPLER_SEED:-$PERCENTILE_SPLIT_SEED}"
 TRAINING_SEED="${TRAINING_SEED:-$SAMPLER_SEED}"
@@ -316,7 +317,9 @@ run_phase() {
         require_protocol_match="$CFG_REQUIRE_PROTOCOL_MATCH_ON_RESUME"
     fi
 
-    verify_type_routing_metadata_snapshot
+    if ! is_enabled "$DRY_RUN"; then
+        verify_type_routing_metadata_snapshot
+    fi
     echo "Phase $phase_key: $phase_name, reset Adam moments=$reset_optimizer_moments"
     if [ "$CFG_METHOD_MODE" = "uniform" ]; then
         run_lora_train \
@@ -361,6 +364,13 @@ run_phase() {
 
 main() {
     cd "$REPO_ROOT"
+    case "$START_PHASE" in
+        a|b|c) ;;
+        *)
+            echo "Error: START_PHASE must be one of: a, b, c." >&2
+            exit 1
+            ;;
+    esac
     # shellcheck disable=SC1091
     source "${REPO_ROOT}/scripts/env_bootstrap.sh"
     ensure_method_filters
@@ -396,6 +406,7 @@ main() {
     echo "Experiment base: $CURRICULUM_BASE_EXP"
     echo "Resolved snapshot: $PROTOCOL_SNAPSHOT_PATH"
     echo "Dry run: $DRY_RUN"
+    echo "Start phase: $START_PHASE"
     echo "============================================================"
 
     if [ ! -f "$PRETRAINED_CKPT" ]; then
@@ -405,6 +416,10 @@ main() {
 
     local phase_a_exp phase_b_exp phase_c_exp
     if [ "$CFG_METHOD_MODE" = "uniform" ]; then
+        if [ "$START_PHASE" != "a" ]; then
+            echo "Error: START_PHASE is only valid for staged curriculum methods." >&2
+            exit 1
+        fi
         phase_c_exp="${CURRICULUM_BASE_EXP}_${PHASE_C_NAME}"
         echo "Uniform FT is a single continuous run; A/B curriculum phases are skipped."
         run_lora_train \
@@ -425,23 +440,33 @@ main() {
     phase_b_exp="${CURRICULUM_BASE_EXP}_phaseB_${PHASE_B_NAME}"
     phase_c_exp="${CURRICULUM_BASE_EXP}_phaseC_${PHASE_C_NAME}"
 
-    run_phase a "$PHASE_A_NAME" "$phase_a_exp" pretrained_ckpt "$PRETRAINED_CKPT" \
-        "$EPOCHS_PHASE_A" "$PHASE_A_TARGET_PROPORTIONS" 0 "$PHASE_A_PACING_SCHEDULE"
     local phase_a_ckpt
-    if is_enabled "$DRY_RUN"; then
-        phase_a_ckpt="<${phase_a_exp}/checkpoints/last.ckpt>"
+    if [ "$START_PHASE" = "a" ]; then
+        run_phase a "$PHASE_A_NAME" "$phase_a_exp" pretrained_ckpt "$PRETRAINED_CKPT" \
+            "$EPOCHS_PHASE_A" "$PHASE_A_TARGET_PROPORTIONS" 0 "$PHASE_A_PACING_SCHEDULE"
+        if is_enabled "$DRY_RUN"; then
+            phase_a_ckpt="<${phase_a_exp}/checkpoints/last.ckpt>"
+        else
+            phase_a_ckpt="$(find_latest_checkpoint "$phase_a_exp")"
+        fi
     else
         phase_a_ckpt="$(find_latest_checkpoint "$phase_a_exp")"
+        echo "Skipping Phase A; resuming from: $phase_a_ckpt"
     fi
 
-    run_phase b "$PHASE_B_NAME" "$phase_b_exp" checkpoint "$phase_a_ckpt" \
-        "$EPOCHS_PHASE_B" "$PHASE_B_TARGET_PROPORTIONS" "$EPOCHS_PHASE_A" \
-        "$PHASE_B_PACING_SCHEDULE"
     local phase_b_ckpt
-    if is_enabled "$DRY_RUN"; then
-        phase_b_ckpt="<${phase_b_exp}/checkpoints/last.ckpt>"
+    if [ "$START_PHASE" = "a" ] || [ "$START_PHASE" = "b" ]; then
+        run_phase b "$PHASE_B_NAME" "$phase_b_exp" checkpoint "$phase_a_ckpt" \
+            "$EPOCHS_PHASE_B" "$PHASE_B_TARGET_PROPORTIONS" "$EPOCHS_PHASE_A" \
+            "$PHASE_B_PACING_SCHEDULE"
+        if is_enabled "$DRY_RUN"; then
+            phase_b_ckpt="<${phase_b_exp}/checkpoints/last.ckpt>"
+        else
+            phase_b_ckpt="$(find_latest_checkpoint "$phase_b_exp")"
+        fi
     else
         phase_b_ckpt="$(find_latest_checkpoint "$phase_b_exp")"
+        echo "Skipping Phases A/B; resuming from: $phase_b_ckpt"
     fi
 
     run_phase c "$PHASE_C_NAME" "$phase_c_exp" checkpoint "$phase_b_ckpt" \
@@ -457,5 +482,5 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-    main "$@"
+main "$@"
 fi

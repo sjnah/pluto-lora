@@ -42,6 +42,7 @@ export UNIFORM_VERSION="${UNIFORM_VERSION:-$CFG_SUITE_UNIFORM_VERSION}"
 # Optional controls.
 export CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-$CFG_SUITE_CONTINUE_ON_FAILURE}"
 export DRY_RUN="${DRY_RUN:-false}"
+export START_PHASE="${START_PHASE:-a}"
 export TYPE_ROUTING_MODE="${TYPE_ROUTING_MODE:-$CFG_SUITE_TYPE_ROUTING_MODE}"
 export FEATURE_CACHE_NAME="${FEATURE_CACHE_NAME:-$CFG_SUITE_FEATURE_CACHE_NAME}"
 export RUN_LLM_TYPE_ROUTING_COMPARISON="${RUN_LLM_TYPE_ROUTING_COMPARISON:-false}"
@@ -92,6 +93,7 @@ run_percentile_ehu_method() {
         echo "DRY_RUN: METHOD=${method} METHOD_LABEL=${label} CURRICULUM_VERSION=${version} TRAINING_PROTOCOL_CONFIG=${TRAINING_PROTOCOL_CONFIG} bash ${LORA_EXPERIMENT_SCRIPT}"
         echo "         TYPE_ROUTING_MODE=${type_routing_mode}${sampler_mode_override:+ SAMPLER_MODE=${sampler_mode_override}}"
         echo "         FEATURE_CACHE_NAME=${FEATURE_CACHE_NAME}"
+        echo "         START_PHASE=${START_PHASE}"
         [ -n "$base_exp" ] && echo "         CURRICULUM_BASE_EXP=${base_exp}"
         [ -n "$filter_prefix" ] && echo "         FILTER_PREFIX=${filter_prefix}"
         return 0
@@ -112,6 +114,7 @@ run_percentile_ehu_method() {
         export METHOD_LABEL="$label"
         export CURRICULUM_VERSION="$version"
         export TRAINING_PROTOCOL_CONFIG
+        export START_PHASE
         export TYPE_ROUTING_MODE="$type_routing_mode"
         [ -n "$sampler_mode_override" ] && export SAMPLER_MODE="$sampler_mode_override"
         bash "$LORA_EXPERIMENT_SCRIPT"
@@ -139,6 +142,7 @@ run_uniform_method() {
         echo "=============================================="
         echo "DRY_RUN: METHOD=uniform CURRICULUM_VERSION=${UNIFORM_VERSION} TRAINING_PROTOCOL_CONFIG=${TRAINING_PROTOCOL_CONFIG} bash ${LORA_EXPERIMENT_SCRIPT}"
         echo "         FEATURE_CACHE_NAME=${FEATURE_CACHE_NAME}"
+        echo "         START_PHASE=${START_PHASE}"
         [ -n "${UNIFORM_CURRICULUM_BASE_EXP:-}" ] && echo "         CURRICULUM_BASE_EXP=${UNIFORM_CURRICULUM_BASE_EXP}"
         return 0
     fi
@@ -155,6 +159,7 @@ run_uniform_method() {
         export METHOD=uniform
         export CURRICULUM_VERSION="$UNIFORM_VERSION"
         export TRAINING_PROTOCOL_CONFIG
+        export START_PHASE
         bash "$LORA_EXPERIMENT_SCRIPT"
     )
     local status=$?
