@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -16,6 +17,11 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+PACING_SNAPSHOT_KEYS = (
+    "CFG_PHASE_A_PACING_SCHEDULE",
+    "CFG_PHASE_B_PACING_SCHEDULE",
+    "CFG_PHASE_C_PACING_SCHEDULE",
+)
 
 
 def load_yaml(path_value: str) -> tuple[Path, dict[str, Any]]:
@@ -68,6 +74,20 @@ def hydra_literal(value: object) -> str:
         sort_keys=True,
         width=1_000_000,
     ).strip()
+
+
+def normalize_snapshot_semantics(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize representation-only fields before immutable snapshot checks."""
+    normalized = copy.deepcopy(payload)
+    for key in PACING_SNAPSHOT_KEYS:
+        value = normalized.get(key)
+        if not isinstance(value, str):
+            continue
+        parsed = yaml.safe_load(value)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"Expected mapping literal at {key}: {value!r}")
+        normalized[key] = parsed
+    return normalized
 
 
 def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, Any]:
@@ -290,10 +310,20 @@ def main() -> None:
         if args.output:
             output = Path(args.output)
             output.parent.mkdir(parents=True, exist_ok=True)
-            if output.exists() and output.read_text(encoding="utf-8") != rendered:
-                raise RuntimeError(
-                    f"Resolved configuration changed for existing snapshot: {output}"
-                )
+            if output.exists():
+                existing_text = output.read_text(encoding="utf-8")
+                if existing_text == rendered:
+                    return
+                existing = json.loads(existing_text)
+                if normalize_snapshot_semantics(existing) != normalize_snapshot_semantics(
+                    resolved
+                ):
+                    raise RuntimeError(
+                        f"Resolved configuration changed for existing snapshot: {output}"
+                    )
+                # Preserve the original immutable snapshot when only the shell
+                # serialization of a semantic pacing mapping changed.
+                return
             output.write_text(rendered, encoding="utf-8")
         else:
             print(rendered, end="")

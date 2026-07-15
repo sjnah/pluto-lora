@@ -1,6 +1,9 @@
 from hydra.core.override_parser.overrides_parser import OverridesParser
 
-from scripts.training.resolve_lora_experiment_config import hydra_literal
+from scripts.training.resolve_lora_experiment_config import (
+    hydra_literal,
+    normalize_snapshot_semantics,
+)
 
 
 def test_pacing_schedule_serializes_as_hydra_flow_mapping() -> None:
@@ -21,3 +24,22 @@ def test_pacing_schedule_serializes_as_hydra_flow_mapping() -> None:
         [f"curriculum.pacing_schedule={literal}"]
     )[0]
     assert override.value() == schedule
+
+
+def test_snapshot_normalization_treats_json_and_hydra_pacing_as_equivalent() -> None:
+    json_snapshot = {
+        "CFG_PROTOCOL_ID": "flat_area_matched_v1",
+        "CFG_PHASE_B_PACING_SCHEDULE": (
+            '{"alpha_end":0.8,"ramp_epochs":4,"type":"hard_replay_ramp"}'
+        ),
+    }
+    hydra_snapshot = {
+        "CFG_PROTOCOL_ID": "flat_area_matched_v1",
+        "CFG_PHASE_B_PACING_SCHEDULE": (
+            "{alpha_end: 0.8, ramp_epochs: 4, type: hard_replay_ramp}"
+        ),
+    }
+
+    assert normalize_snapshot_semantics(json_snapshot) == normalize_snapshot_semantics(
+        hydra_snapshot
+    )
