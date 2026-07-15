@@ -23,7 +23,7 @@ methods:
 
 seeds:
   start: 1
-  end: 3
+  end: 1
 
 evaluation:
   val14: false

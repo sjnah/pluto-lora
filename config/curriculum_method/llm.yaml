@@ -21,5 +21,7 @@ type_routing:
 exposure:
   persistent: true
   max_repeat_per_near_duplicate_group: 8
-  max_cumulative_exposure_per_scenario_per_epoch: 2
+  # Match the per-epoch repeat cap. The former value 2 produced a total cap of
+  # 24, leaving only ~2.6% capacity above the 12-epoch hard-replay demand.
+  max_cumulative_exposure_per_scenario_per_epoch: 4
   max_cumulative_exposure_per_near_duplicate_group_per_epoch: 8

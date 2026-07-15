@@ -200,6 +200,117 @@ class TestPersistentCurriculumExposureState(unittest.TestCase):
             start_metadata["sampled_split_counts"]["hard"],
         )
 
+    def test_static_weighted_split_targets_are_applied_after_inner_weights(self):
+        records = [
+            {
+                "scenario_id": f"scene_{index}",
+                "near_duplicate_groups": [f"group_{index}"],
+                "split": ["easy", "medium", "hard"][index // 10],
+                "log_name": f"log_{index}",
+            }
+            for index in range(30)
+        ]
+        common = dict(
+            weights=[1.0 / 30.0] * 30,
+            scenario_records=records,
+            num_samples=30,
+            max_repeat_per_scenario=4,
+            max_repeat_per_group=4,
+            random_seed=3,
+            cumulative_exposure_state_path=None,
+            max_cumulative_exposure_per_scenario=0,
+            max_cumulative_exposure_per_group=0,
+            phase_name="easy_warmup",
+        )
+        sampler = ExposureCappedWeightedSampler(
+            **common,
+            split_names=["easy", "medium", "hard"],
+            base_target_proportions=[0.70, 0.20, 0.10],
+        )
+
+        _, metadata = sampler._build_indices(0)
+        for actual, expected in zip(
+            metadata["resolved_target_proportions"], [0.70, 0.20, 0.10]
+        ):
+            self.assertAlmostEqual(actual, expected)
+        self.assertGreater(
+            metadata["sampled_split_counts"]["easy"],
+            metadata["sampled_split_counts"]["medium"],
+        )
+
+    def test_full_hard_ramp_lifecycle_reaches_phase_c_without_cap_exhaustion(self):
+        split_names = ["easy", "medium", "hard"]
+        records = [
+            {
+                "scenario_id": f"scene_{index}",
+                "near_duplicate_groups": [f"group_{index}"],
+                "split": split_names[index // 30],
+                "log_name": f"log_{index}",
+                "demonstration_type": "normal",
+            }
+            for index in range(90)
+        ]
+        # Non-uniform within-bucket weights emulate type-routing multipliers;
+        # bucket-mass rebalancing must preserve the outer curriculum target.
+        weights = [2.0 if index % 30 == 0 else 1.0 for index in range(90)]
+
+        def build_phase(state_path, name, start_epoch, proportions, schedule=None):
+            return ExposureCappedWeightedSampler(
+                weights=weights,
+                scenario_records=records,
+                num_samples=90,
+                max_repeat_per_scenario=4,
+                max_repeat_per_group=8,
+                random_seed=23,
+                cumulative_exposure_state_path=str(state_path),
+                max_cumulative_exposure_per_scenario=48,
+                max_cumulative_exposure_per_group=96,
+                phase_name=name,
+                phase_start_epoch=start_epoch,
+                pacing_schedule=schedule,
+                split_names=split_names,
+                base_target_proportions=proportions,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "lifecycle.json"
+            phase_a = build_phase(
+                state_path, "easy_warmup", 0, [0.70, 0.20, 0.10]
+            )
+            phase_b = build_phase(
+                state_path,
+                "hard_ramp",
+                2,
+                [1 / 15, 1 / 15, 13 / 15],
+                {
+                    "type": "hard_replay_ramp",
+                    "alpha_start": 0.0,
+                    "alpha_end": 0.8,
+                    "ramp_epochs": 4,
+                },
+            )
+            phase_c = build_phase(
+                state_path, "hard_replay", 6, [1 / 15, 1 / 15, 13 / 15]
+            )
+
+            for sampler, epochs in (
+                (phase_a, range(0, 2)),
+                (phase_b, range(2, 6)),
+                (phase_c, range(6, 12)),
+            ):
+                for epoch in epochs:
+                    sampler.set_epoch(epoch)
+                    self.assertEqual(len(list(sampler)), 90)
+
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(state["plans"]), 12)
+            self.assertLessEqual(
+                max(state["cumulative_scenario_exposure"].values()), 48
+            )
+            for epoch in range(6, 12):
+                metadata = state["plans"][f"hard_replay:{epoch}"]["metadata"]
+                self.assertGreater(metadata["sampled_split_counts"]["hard"], 65)
+
     def test_pre_resume_preflight_does_not_persist_exposure_or_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

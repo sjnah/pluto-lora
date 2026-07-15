@@ -35,7 +35,8 @@ METHOD_SHA256="$CFG_METHOD_SHA256"
 METHOD_LABEL="${METHOD_LABEL:-$CFG_METHOD_LABEL}"
 CURRICULUM_VERSION="${CURRICULUM_VERSION:-unversioned}"
 DRY_RUN="${DRY_RUN:-false}"
-START_PHASE="${START_PHASE:-a}"
+START_PHASE="${START_PHASE:-auto}"
+FRESH_START="${FRESH_START:-false}"
 PERCENTILE_SPLIT_SEED="${PERCENTILE_SPLIT_SEED:-42}"
 SAMPLER_SEED="${SAMPLER_SEED:-$PERCENTILE_SPLIT_SEED}"
 TRAINING_SEED="${TRAINING_SEED:-$SAMPLER_SEED}"
@@ -229,6 +230,76 @@ find_latest_checkpoint() {
     echo "$checkpoint"
 }
 
+find_latest_checkpoint_optional() {
+    local exp_name="$1"
+    local checkpoint=""
+    if [ -d outputs ]; then
+        checkpoint="$({
+            find outputs -type f \
+                -path "*/outputs/${exp_name}/checkpoints/last.ckpt" \
+                -printf '%T@ %p\n' 2>/dev/null || true
+        } | sort -nr | head -n 1 | cut -d' ' -f2-)"
+    fi
+    if [ -n "$checkpoint" ]; then
+        case "$checkpoint" in /*) ;; *) checkpoint="$(pwd)/${checkpoint}" ;; esac
+    fi
+    echo "$checkpoint"
+}
+
+prepare_fresh_start() {
+    if ! is_enabled "$FRESH_START"; then
+        return 0
+    fi
+    if [ "$START_PHASE" != "auto" ] && [ "$START_PHASE" != "a" ]; then
+        echo "Error: FRESH_START=true requires START_PHASE=auto or a." >&2
+        exit 1
+    fi
+
+    local checkpoint_exp="${CURRICULUM_BASE_EXP}_${PHASE_C_NAME}"
+    if [ "$CFG_METHOD_MODE" != "uniform" ]; then
+        local phase_key phase_name phase_checkpoint
+        for phase_key in a b c; do
+            case "$phase_key" in
+                a) phase_name="$PHASE_A_NAME" ;;
+                b) phase_name="$PHASE_B_NAME" ;;
+                c) phase_name="$PHASE_C_NAME" ;;
+            esac
+            checkpoint_exp="${CURRICULUM_BASE_EXP}_phase${phase_key^^}_${phase_name}"
+            phase_checkpoint="$(find_latest_checkpoint_optional "$checkpoint_exp")"
+            if [ -n "$phase_checkpoint" ]; then
+                echo "Error: FRESH_START=true refuses to archive state while a phase checkpoint exists:" >&2
+                echo "  $phase_checkpoint" >&2
+                exit 1
+            fi
+        done
+    elif [ -n "$(find_latest_checkpoint_optional "$checkpoint_exp")" ]; then
+        echo "Error: FRESH_START=true refuses to archive state while a Uniform checkpoint exists." >&2
+        exit 1
+    fi
+
+    local timestamp path backup_path
+    timestamp="$(date +%Y%m%d_%H%M%S)_$$"
+    local state_paths=(
+        "$PROTOCOL_SNAPSHOT_PATH"
+        "${REPO_ROOT}/artifacts/curriculum_sampling/${CURRICULUM_BASE_EXP}_cumulative_exposure.json"
+        "${REPO_ROOT}/artifacts/curriculum_sampling/${CURRICULUM_BASE_EXP}_cumulative_exposure.json.lock"
+        "${REPO_ROOT}/artifacts/curriculum_sampling/${CURRICULUM_BASE_EXP}_type_metadata.csv"
+    )
+    while IFS= read -r path; do
+        [ -n "$path" ] && state_paths+=("$path")
+    done < <(
+        find "${REPO_ROOT}/artifacts/curriculum_sampling" -maxdepth 1 -type f \
+            -name "${CURRICULUM_BASE_EXP}_phase*.json*" -print 2>/dev/null || true
+    )
+
+    for path in "${state_paths[@]}"; do
+        [ -f "$path" ] || continue
+        backup_path="${path}.fresh_start_${timestamp}.bak"
+        mv -- "$path" "$backup_path"
+        echo "Fresh-start backup: $path -> $backup_path"
+    done
+}
+
 run_lora_train() {
     local experiment_name="$1"
     local checkpoint_arg="$2"
@@ -365,15 +436,18 @@ run_phase() {
 main() {
     cd "$REPO_ROOT"
     case "$START_PHASE" in
-        a|b|c) ;;
+        auto|a|b|c) ;;
         *)
-            echo "Error: START_PHASE must be one of: a, b, c." >&2
+            echo "Error: START_PHASE must be one of: auto, a, b, c." >&2
             exit 1
             ;;
     esac
     # shellcheck disable=SC1091
     source "${REPO_ROOT}/scripts/env_bootstrap.sh"
     ensure_method_filters
+    if ! is_enabled "$DRY_RUN"; then
+        prepare_fresh_start
+    fi
     if ! is_enabled "$DRY_RUN"; then
         freeze_type_routing_metadata
     fi
@@ -407,6 +481,7 @@ main() {
     echo "Resolved snapshot: $PROTOCOL_SNAPSHOT_PATH"
     echo "Dry run: $DRY_RUN"
     echo "Start phase: $START_PHASE"
+    echo "Fresh start: $FRESH_START"
     echo "============================================================"
 
     if [ ! -f "$PRETRAINED_CKPT" ]; then
@@ -416,7 +491,7 @@ main() {
 
     local phase_a_exp phase_b_exp phase_c_exp
     if [ "$CFG_METHOD_MODE" = "uniform" ]; then
-        if [ "$START_PHASE" != "a" ]; then
+        if [ "$START_PHASE" != "auto" ] && [ "$START_PHASE" != "a" ]; then
             echo "Error: START_PHASE is only valid for staged curriculum methods." >&2
             exit 1
         fi
@@ -440,8 +515,28 @@ main() {
     phase_b_exp="${CURRICULUM_BASE_EXP}_phaseB_${PHASE_B_NAME}"
     phase_c_exp="${CURRICULUM_BASE_EXP}_phaseC_${PHASE_C_NAME}"
 
+    local effective_start_phase="$START_PHASE"
+    if [ "$effective_start_phase" = "auto" ]; then
+        local existing_phase_a_ckpt existing_phase_b_ckpt existing_phase_c_ckpt
+        existing_phase_c_ckpt="$(find_latest_checkpoint_optional "$phase_c_exp")"
+        existing_phase_b_ckpt="$(find_latest_checkpoint_optional "$phase_b_exp")"
+        existing_phase_a_ckpt="$(find_latest_checkpoint_optional "$phase_a_exp")"
+        if [ -n "$existing_phase_c_ckpt" ]; then
+            echo "Auto-resume: completed Phase C checkpoint already exists: $existing_phase_c_ckpt"
+            echo "Completed $METHOD experiment: $existing_phase_c_ckpt"
+            return 0
+        elif [ -n "$existing_phase_b_ckpt" ]; then
+            effective_start_phase=c
+        elif [ -n "$existing_phase_a_ckpt" ]; then
+            effective_start_phase=b
+        else
+            effective_start_phase=a
+        fi
+        echo "Auto-resume selected start phase: $effective_start_phase"
+    fi
+
     local phase_a_ckpt
-    if [ "$START_PHASE" = "a" ]; then
+    if [ "$effective_start_phase" = "a" ]; then
         run_phase a "$PHASE_A_NAME" "$phase_a_exp" pretrained_ckpt "$PRETRAINED_CKPT" \
             "$EPOCHS_PHASE_A" "$PHASE_A_TARGET_PROPORTIONS" 0 "$PHASE_A_PACING_SCHEDULE"
         if is_enabled "$DRY_RUN"; then
@@ -455,7 +550,7 @@ main() {
     fi
 
     local phase_b_ckpt
-    if [ "$START_PHASE" = "a" ] || [ "$START_PHASE" = "b" ]; then
+    if [ "$effective_start_phase" = "a" ] || [ "$effective_start_phase" = "b" ]; then
         run_phase b "$PHASE_B_NAME" "$phase_b_exp" checkpoint "$phase_a_ckpt" \
             "$EPOCHS_PHASE_B" "$PHASE_B_TARGET_PROPORTIONS" "$EPOCHS_PHASE_A" \
             "$PHASE_B_PACING_SCHEDULE"

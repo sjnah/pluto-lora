@@ -381,9 +381,10 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
             "weights": self._weights,
             "num_samples": self._num_samples,
             "max_exposure_per_demonstration_type": self._max_exposure_per_demonstration_type,
-            "split_names": self._split_names,
-            "base_target_proportions": self._base_target_proportions,
         }
+        if self._split_names:
+            payload["split_names"] = self._split_names
+            payload["base_target_proportions"] = self._base_target_proportions
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
@@ -391,7 +392,7 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
         weights = self._weights
         pacing_metadata: Dict[str, Any] = {}
         resolved_proportions: List[float] = []
-        if self._pacing_schedule:
+        if self._split_names and self._base_target_proportions:
             resolved_proportions, pacing_metadata = scheduled_target_proportions(
                 self._base_target_proportions,
                 self._pacing_schedule,
