@@ -49,7 +49,7 @@ export UNIFORM_VERSION="${UNIFORM_VERSION:-$CFG_SUITE_UNIFORM_VERSION}"
 # Naming modes for outputs trained by the current suite.
 export LLM_EXP_STYLE="${LLM_EXP_STYLE:-percentile_ehu}"
 export UNIFORM_EXP_STYLE="${UNIFORM_EXP_STYLE:-uniform_only}"
-export PERCENTILE_EHU_FINAL_PHASE="${PERCENTILE_EHU_FINAL_PHASE:-phaseC_uniform_consolidation}"
+export PERCENTILE_EHU_FINAL_PHASE="${PERCENTILE_EHU_FINAL_PHASE:-phaseC_hard_replay}"
 
 # Optional behavior.
 export CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-$CFG_SUITE_CONTINUE_ON_FAILURE}"

@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -73,6 +74,49 @@ class TestSeedAggregation(unittest.TestCase):
         second["simulation_type"] = "reactive"
         result = collector.aggregate_seeded_rows([first, second])
         self.assertEqual(len(result), 2)
+
+
+class TestCsvOutput(unittest.TestCase):
+    def test_detail_csv_uses_stable_fields_when_later_rows_have_extra_keys(self):
+        rows = [
+            {
+                "test": "val14_fast",
+                "test_label": "Val14 fast",
+                "method": "zeroshot",
+                "method_label": "Zero-shot",
+                "experiment": "quick_test_zeroshot_val14_fast",
+                "status": "invalid",
+                "source": "glob",
+                "metrics_dirs": ["/tmp/invalid/metrics"],
+                "error": "Missing required metrics",
+            },
+            {
+                "test": "val14_fast",
+                "test_label": "Val14 fast",
+                "method": "rulebased",
+                "method_label": "Rule-based",
+                "experiment": "quick_test_rulebased_val14_fast",
+                "status": "ok",
+                "score": 0.5,
+                "source": "glob",
+                "metrics_dirs": ["/tmp/ok/metrics"],
+                "metric_means": {
+                    "no_ego_at_fault_collisions": 1.0,
+                    "drivable_area_compliance": 0.75,
+                },
+                "metric_counts": {
+                    "no_ego_at_fault_collisions": 270,
+                    "drivable_area_compliance": 270,
+                },
+                "without_collision": 1.0,
+                "drivable": 0.75,
+            },
+        ]
+        buffer = io.StringIO()
+        collector.write_csv_rows(rows, buffer, include_detail=True)
+        output = buffer.getvalue()
+        self.assertIn("without_collision,drivable,progress", output.splitlines()[0])
+        self.assertIn('"{""drivable_area_compliance"": 270', output)
 
 
 if __name__ == "__main__":

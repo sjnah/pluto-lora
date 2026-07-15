@@ -54,7 +54,7 @@ export RUN_LOSS_BASED="$RUN_LOSS"
 export RUN_LLM_CURRICULUM="$RUN_LLM"
 
 # Method versions. The suite defaults to the current percentile-EHU generation.
-export PERCENTILE_EHU_FINAL_PHASE="${PERCENTILE_EHU_FINAL_PHASE:-phaseC_uniform_consolidation}"
+export PERCENTILE_EHU_FINAL_PHASE="${PERCENTILE_EHU_FINAL_PHASE:-phaseC_hard_replay}"
 export LLM_VERSION="${LLM_VERSION:-${LLM_CURRICULUM_VERSION:-v4.3.13}}"
 export RULE_VERSION="${RULE_VERSION:-${RULE_CURRICULUM_VERSION:-v4.3.13}}"
 export LOSS_VERSION="${LOSS_VERSION:-${LOSS_CURRICULUM_VERSION:-v4.3.13}}"

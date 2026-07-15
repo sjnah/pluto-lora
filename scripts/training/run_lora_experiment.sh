@@ -34,6 +34,7 @@ PROTOCOL_SHA256="$CFG_PROTOCOL_SHA256"
 METHOD_SHA256="$CFG_METHOD_SHA256"
 METHOD_LABEL="${METHOD_LABEL:-$CFG_METHOD_LABEL}"
 CURRICULUM_VERSION="${CURRICULUM_VERSION:-unversioned}"
+DRY_RUN="${DRY_RUN:-false}"
 PERCENTILE_SPLIT_SEED="${PERCENTILE_SPLIT_SEED:-42}"
 SAMPLER_SEED="${SAMPLER_SEED:-$PERCENTILE_SPLIT_SEED}"
 TRAINING_SEED="${TRAINING_SEED:-$SAMPLER_SEED}"
@@ -82,6 +83,16 @@ PHASE_C_NAME="$CFG_PHASE_C_NAME"
 PHASE_A_TARGET_PROPORTIONS="$CFG_PHASE_A_TARGET_PROPORTIONS"
 PHASE_B_TARGET_PROPORTIONS="$CFG_PHASE_B_TARGET_PROPORTIONS"
 PHASE_C_TARGET_PROPORTIONS="$CFG_PHASE_C_TARGET_PROPORTIONS"
+PHASE_A_PACING_SCHEDULE="$CFG_PHASE_A_PACING_SCHEDULE"
+PHASE_B_PACING_SCHEDULE="$CFG_PHASE_B_PACING_SCHEDULE"
+PHASE_C_PACING_SCHEDULE="$CFG_PHASE_C_PACING_SCHEDULE"
+
+is_enabled() {
+    case "$1" in
+        true|TRUE|True|1|yes|YES|Yes|on|ON|On) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 if [ "$CFG_METHOD_MODE" = "uniform" ]; then
     default_base="curriculum_lora_uniform_only_${CURRICULUM_VERSION}_${PROTOCOL_ID}"
@@ -232,40 +243,51 @@ run_lora_train() {
         cache_overrides+=("cache.cache_path=$FEATURE_CACHE_PATH")
     fi
 
-    python scripts/training/finetune_pluto.py \
+    local cmd=(
+        python scripts/training/finetune_pluto.py
         --config-name training/train_pluto_lora \
-        experiment="$experiment_name" \
-        "$checkpoint_arg=$checkpoint_path" \
-        scenario_filter="$scenario_filter" \
-        lora.enabled="$LORA_ENABLED" \
-        lora.rank="$LORA_RANK" \
-        lora.alpha="$LORA_ALPHA" \
-        lora.dropout="$LORA_DROPOUT" \
-        lora.lora_lr="$LORA_LR" \
-        lora.policy_head_lr="$HEAD_LR" \
-        lora.ultra_minimal="$ULTRA_MINIMAL" \
-        lora.scheduler_type="$SCHEDULER_TYPE" \
-        lora.scheduler_horizon_epochs="$EPOCHS_PHASE_C" \
-        lora.reset_optimizer_moments_on_resume="$reset_optimizer_moments" \
-        lora.training_protocol_id="$PROTOCOL_ID" \
-        lora.training_protocol_sha256="$PROTOCOL_SHA256" \
-        lora.curriculum_method_id="$METHOD" \
-        lora.curriculum_method_sha256="$METHOD_SHA256" \
-        lora.require_protocol_match_on_resume="$require_protocol_match" \
-        lr="$LR" \
-        weight_decay="$WEIGHT_DECAY" \
-        epochs="$epochs" \
-        warmup_steps="$WARMUP_STEPS" \
-        gradient_clip_val="$GRADIENT_CLIP_VAL" \
-        skip_nan_steps="$SKIP_NAN_STEPS" \
-        remove_invalid_goals="$REMOVE_INVALID_GOALS" \
-        data_loader.params.batch_size="$BATCH_SIZE" \
-        +lightning.trainer.params.accumulate_grad_batches="$ACCUMULATE_GRAD_BATCHES" \
-        lightning.trainer.params.num_sanity_val_steps="$NUM_SANITY_VAL_STEPS" \
-        wandb.name="$experiment_name" \
-        seed="$TRAINING_SEED" \
-        "${cache_overrides[@]}" \
+        "experiment=$experiment_name"
+        "$checkpoint_arg=$checkpoint_path"
+        "scenario_filter=$scenario_filter"
+        "lora.enabled=$LORA_ENABLED"
+        "lora.rank=$LORA_RANK"
+        "lora.alpha=$LORA_ALPHA"
+        "lora.dropout=$LORA_DROPOUT"
+        "lora.lora_lr=$LORA_LR"
+        "lora.policy_head_lr=$HEAD_LR"
+        "lora.ultra_minimal=$ULTRA_MINIMAL"
+        "lora.scheduler_type=$SCHEDULER_TYPE"
+        "lora.scheduler_horizon_epochs=$EPOCHS_PHASE_C"
+        "lora.reset_optimizer_moments_on_resume=$reset_optimizer_moments"
+        "lora.training_protocol_id=$PROTOCOL_ID"
+        "lora.training_protocol_sha256=$PROTOCOL_SHA256"
+        "lora.curriculum_method_id=$METHOD"
+        "lora.curriculum_method_sha256=$METHOD_SHA256"
+        "lora.require_protocol_match_on_resume=$require_protocol_match"
+        "lr=$LR"
+        "weight_decay=$WEIGHT_DECAY"
+        "epochs=$epochs"
+        "warmup_steps=$WARMUP_STEPS"
+        "gradient_clip_val=$GRADIENT_CLIP_VAL"
+        "skip_nan_steps=$SKIP_NAN_STEPS"
+        "remove_invalid_goals=$REMOVE_INVALID_GOALS"
+        "data_loader.params.batch_size=$BATCH_SIZE"
+        "+lightning.trainer.params.accumulate_grad_batches=$ACCUMULATE_GRAD_BATCHES"
+        "lightning.trainer.params.num_sanity_val_steps=$NUM_SANITY_VAL_STEPS"
+        "wandb.name=$experiment_name"
+        "seed=$TRAINING_SEED"
+        "${cache_overrides[@]}"
         "$@"
+    )
+
+    if is_enabled "$DRY_RUN"; then
+        printf 'DRY_RUN:'
+        printf ' %q' "${cmd[@]}"
+        printf '\n'
+        return 0
+    fi
+
+    "${cmd[@]}"
 }
 
 run_phase() {
@@ -277,6 +299,7 @@ run_phase() {
     local epochs="$6"
     local proportions="$7"
     local phase_start_epoch="$8"
+    local pacing_schedule="$9"
     local reset_optimizer_moments=false
     local require_protocol_match=false
 
@@ -306,6 +329,7 @@ run_phase() {
         "$reset_optimizer_moments" "$require_protocol_match" \
         "+curriculum.splits=$CURRICULUM_SPLITS" \
         "+curriculum.sampling_weights=$proportions" \
+        "curriculum.pacing_schedule=$pacing_schedule" \
         "curriculum.score_method=$CFG_SCORE_METHOD" \
         "curriculum.bucket_split_rule=quantile_33_33_33" \
         "curriculum.bucketization_mode=$BUCKETIZATION_MODE" \
@@ -334,20 +358,29 @@ main() {
     # shellcheck disable=SC1091
     source "${REPO_ROOT}/scripts/env_bootstrap.sh"
     ensure_method_filters
-    freeze_type_routing_metadata
-    python "$CONFIG_RESOLVER" \
-        --protocol "$TRAINING_PROTOCOL_CONFIG" \
-        --method "$METHOD_CONFIG" \
-        --format json \
-        --output "$PROTOCOL_SNAPSHOT_PATH"
+    if ! is_enabled "$DRY_RUN"; then
+        freeze_type_routing_metadata
+    fi
+    if ! is_enabled "$DRY_RUN"; then
+        python "$CONFIG_RESOLVER" \
+            --protocol "$TRAINING_PROTOCOL_CONFIG" \
+            --method "$METHOD_CONFIG" \
+            --format json \
+            --output "$PROTOCOL_SNAPSHOT_PATH"
+    fi
 
     echo "============================================================"
     echo "PLUTO LoRA: method=$METHOD, artifact=$CURRICULUM_VERSION"
     echo "Protocol: $PROTOCOL_ID ($PROTOCOL_SHA256)"
     echo "Method config: $CFG_METHOD_PATH ($METHOD_SHA256)"
     echo "Scheduler: $SCHEDULER_TYPE, warmup=$WARMUP_STEPS, LoRA LR=$LORA_LR, head LR=$HEAD_LR"
-    echo "Cumulative epochs: $EPOCHS_PHASE_A/$EPOCHS_PHASE_B/$EPOCHS_PHASE_C"
-    echo "A->B Adam reset: $RESET_OPTIMIZER_MOMENTS_AT_PHASE_B; B->C reset: false"
+    if [ "$CFG_METHOD_MODE" = "uniform" ]; then
+        echo "Execution: continuous Uniform FT for $EPOCHS_PHASE_C epochs"
+        echo "Phase transitions: disabled; optimizer reset: disabled"
+    else
+        echo "Cumulative epochs: $EPOCHS_PHASE_A/$EPOCHS_PHASE_B/$EPOCHS_PHASE_C"
+        echo "A->B Adam reset: $RESET_OPTIMIZER_MOMENTS_AT_PHASE_B; B->C reset: false"
+    fi
     echo "Seed: training=$TRAINING_SEED sampler=$SAMPLER_SEED"
     if [ -n "$FEATURE_CACHE_PATH" ]; then
         echo "Feature cache: $FEATURE_CACHE_PATH"
@@ -356,6 +389,7 @@ main() {
     fi
     echo "Experiment base: $CURRICULUM_BASE_EXP"
     echo "Resolved snapshot: $PROTOCOL_SNAPSHOT_PATH"
+    echo "Dry run: $DRY_RUN"
     echo "============================================================"
 
     if [ ! -f "$PRETRAINED_CKPT" ]; then
@@ -365,29 +399,54 @@ main() {
 
     local phase_a_exp phase_b_exp phase_c_exp
     if [ "$CFG_METHOD_MODE" = "uniform" ]; then
-        phase_a_exp="${CURRICULUM_BASE_EXP}_${PHASE_A_NAME}"
-        phase_b_exp="${CURRICULUM_BASE_EXP}_${PHASE_B_NAME}"
         phase_c_exp="${CURRICULUM_BASE_EXP}_${PHASE_C_NAME}"
-    else
-        phase_a_exp="${CURRICULUM_BASE_EXP}_phaseA_${PHASE_A_NAME}"
-        phase_b_exp="${CURRICULUM_BASE_EXP}_phaseB_${PHASE_B_NAME}"
-        phase_c_exp="${CURRICULUM_BASE_EXP}_phaseC_${PHASE_C_NAME}"
+        echo "Uniform FT is a single continuous run; A/B curriculum phases are skipped."
+        run_lora_train \
+            "$phase_c_exp" pretrained_ckpt "$PRETRAINED_CKPT" \
+            "$SCENARIO_FILTER_UNIFORM" "$EPOCHS_PHASE_C" \
+            false false
+        local uniform_final_ckpt
+        if is_enabled "$DRY_RUN"; then
+            uniform_final_ckpt="<${phase_c_exp}/checkpoints/last.ckpt>"
+        else
+            uniform_final_ckpt="$(find_latest_checkpoint "$phase_c_exp")"
+        fi
+        echo "Completed $METHOD experiment: $uniform_final_ckpt"
+        return 0
     fi
 
+    phase_a_exp="${CURRICULUM_BASE_EXP}_phaseA_${PHASE_A_NAME}"
+    phase_b_exp="${CURRICULUM_BASE_EXP}_phaseB_${PHASE_B_NAME}"
+    phase_c_exp="${CURRICULUM_BASE_EXP}_phaseC_${PHASE_C_NAME}"
+
     run_phase a "$PHASE_A_NAME" "$phase_a_exp" pretrained_ckpt "$PRETRAINED_CKPT" \
-        "$EPOCHS_PHASE_A" "$PHASE_A_TARGET_PROPORTIONS" 0
+        "$EPOCHS_PHASE_A" "$PHASE_A_TARGET_PROPORTIONS" 0 "$PHASE_A_PACING_SCHEDULE"
     local phase_a_ckpt
-    phase_a_ckpt="$(find_latest_checkpoint "$phase_a_exp")"
+    if is_enabled "$DRY_RUN"; then
+        phase_a_ckpt="<${phase_a_exp}/checkpoints/last.ckpt>"
+    else
+        phase_a_ckpt="$(find_latest_checkpoint "$phase_a_exp")"
+    fi
 
     run_phase b "$PHASE_B_NAME" "$phase_b_exp" checkpoint "$phase_a_ckpt" \
-        "$EPOCHS_PHASE_B" "$PHASE_B_TARGET_PROPORTIONS" "$EPOCHS_PHASE_A"
+        "$EPOCHS_PHASE_B" "$PHASE_B_TARGET_PROPORTIONS" "$EPOCHS_PHASE_A" \
+        "$PHASE_B_PACING_SCHEDULE"
     local phase_b_ckpt
-    phase_b_ckpt="$(find_latest_checkpoint "$phase_b_exp")"
+    if is_enabled "$DRY_RUN"; then
+        phase_b_ckpt="<${phase_b_exp}/checkpoints/last.ckpt>"
+    else
+        phase_b_ckpt="$(find_latest_checkpoint "$phase_b_exp")"
+    fi
 
     run_phase c "$PHASE_C_NAME" "$phase_c_exp" checkpoint "$phase_b_ckpt" \
-        "$EPOCHS_PHASE_C" "$PHASE_C_TARGET_PROPORTIONS" "$EPOCHS_PHASE_B"
+        "$EPOCHS_PHASE_C" "$PHASE_C_TARGET_PROPORTIONS" "$EPOCHS_PHASE_B" \
+        "$PHASE_C_PACING_SCHEDULE"
     local final_ckpt
-    final_ckpt="$(find_latest_checkpoint "$phase_c_exp")"
+    if is_enabled "$DRY_RUN"; then
+        final_ckpt="<${phase_c_exp}/checkpoints/last.ckpt>"
+    else
+        final_ckpt="$(find_latest_checkpoint "$phase_c_exp")"
+    fi
     echo "Completed $METHOD experiment: $final_ckpt"
 }
 

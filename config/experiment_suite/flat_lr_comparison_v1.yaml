@@ -3,23 +3,23 @@ training_protocol: config/training_protocol/flat_area_matched_v1.yaml
 
 methods:
   llm:
-    enabled: false
-    artifact_version: v5.0.4.0.15
-  random:
     enabled: true
-    artifact_version: v1.16
+    artifact_version: v5.0.4.0.18
+  random:
+    enabled: false
+    artifact_version: v1.18
   uniform:
     enabled: true
-    artifact_version: v1.16
+    artifact_version: v1.18
   rule:
     enabled: false
-    artifact_version: v3.12
+    artifact_version: v3.18
   loss:
     enabled: false
-    artifact_version: v1.12
+    artifact_version: v1.18
   mpoc:
-    enabled: false
-    artifact_version: v1.12
+    enabled: true
+    artifact_version: v1.18
 
 seeds:
   start: 1
@@ -40,4 +40,4 @@ runtime:
   type_routing_mode: "off"
   continue_on_failure: false
   disable_simulation_log: true
-  skip_training_if_checkpoint_exists: false
+  skip_training_if_checkpoint_exists: true

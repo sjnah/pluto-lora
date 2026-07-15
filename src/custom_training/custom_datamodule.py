@@ -39,6 +39,7 @@ from src.custom_training.curriculum_sampling import (
     build_exact_bucket_quota_indices,
     build_exposure_capped_bucket_quota_indices,
     build_exposure_capped_weighted_indices,
+    scheduled_target_proportions,
     validate_demonstration_type_routing,
 )
 
@@ -80,6 +81,7 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         max_cumulative_exposure_per_group: int = 0,
         batch_size: int = 1,
         accumulate_grad_batches: int = 1,
+        pacing_schedule: Optional[Dict[str, Any]] = None,
     ):
         self._bucket_sizes = [int(size) for size in bucket_sizes]
         self._target_proportions = [float(value) for value in target_proportions]
@@ -98,6 +100,7 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         self._max_cumulative_exposure_per_group = int(max_cumulative_exposure_per_group)
         self._batch_size = max(1, int(batch_size))
         self._accumulate_grad_batches = max(1, int(accumulate_grad_batches))
+        self._pacing_schedule = dict(pacing_schedule or {})
         self._epoch: Optional[int] = None
 
     def set_epoch(self, epoch: int) -> None:
@@ -128,6 +131,7 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
             "epoch": int(epoch),
             "bucket_sizes": self._bucket_sizes,
             "target_proportions": self._target_proportions,
+            "pacing_schedule": self._pacing_schedule,
             "max_repeat_per_scenario": self._max_repeat_per_scenario,
             "max_repeat_per_group": self._max_repeat_per_group,
             "max_cumulative_exposure_per_scenario": self._max_cumulative_exposure_per_scenario,
@@ -138,10 +142,16 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         return hashlib.sha256(encoded).hexdigest()
 
     def _build_indices(self, epoch: int, prior_scenario=None, prior_group=None):
+        target_proportions, pacing_metadata = scheduled_target_proportions(
+            self._target_proportions,
+            self._pacing_schedule,
+            epoch=epoch,
+            phase_start_epoch=self._phase_start_epoch,
+        )
         if self._scenario_records and self._max_repeat_per_group > 0:
             indices, metadata = build_exposure_capped_bucket_quota_indices(
                 self._bucket_sizes,
-                self._target_proportions,
+                target_proportions,
                 scenario_ids=[record["scenario_id"] for record in self._scenario_records],
                 near_duplicate_groups=[
                     record["near_duplicate_groups"] for record in self._scenario_records
@@ -158,11 +168,15 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         else:
             indices, metadata = build_exact_bucket_quota_indices(
                 self._bucket_sizes,
-                self._target_proportions,
+                target_proportions,
                 max_repeat_per_scenario=self._max_repeat_per_scenario,
                 seed=self._random_seed,
                 epoch=epoch,
             )
+        if self._pacing_schedule:
+            metadata["base_target_proportions"] = self._target_proportions
+            metadata["pacing_schedule"] = self._pacing_schedule
+            metadata["pacing"] = pacing_metadata
         if self._scenario_records:
             sampled_records = [self._scenario_records[index] for index in indices]
             metadata.update(
@@ -315,6 +329,7 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
         batch_size: int = 1,
         accumulate_grad_batches: int = 1,
         max_exposure_per_demonstration_type: Optional[Dict[str, int]] = None,
+        pacing_schedule: Optional[Dict[str, Any]] = None,
     ):
         if (
             max_cumulative_exposure_per_scenario > 0
@@ -342,6 +357,7 @@ class ExposureCappedWeightedSampler(ExactBucketQuotaSampler):
             max_cumulative_exposure_per_group=max_cumulative_exposure_per_group,
             batch_size=batch_size,
             accumulate_grad_batches=accumulate_grad_batches,
+            pacing_schedule=pacing_schedule,
         )
 
     def _plan_fingerprint(self, epoch: int) -> str:
@@ -626,6 +642,7 @@ def distributed_curriculum_sampler_init(
     max_cumulative_exposure_per_near_duplicate_group: int = 0,
     batch_size: int = 1,
     accumulate_grad_batches: int = 1,
+    pacing_schedule: Optional[Dict[str, Any]] = None,
 ) -> WeightedRandomSampler:
     """
     Initialize WeightedSampler for curriculum learning with multiple splits.
@@ -659,6 +676,8 @@ def distributed_curriculum_sampler_init(
     sampler_mode = str(sampler_mode or "legacy_weighted")
     if sampler_mode not in {"legacy_weighted", "exact_bucket_quota"}:
         raise ValueError(f"Unsupported curriculum sampler_mode: {sampler_mode}")
+    if pacing_schedule and sampler_mode != "exact_bucket_quota":
+        raise ValueError("curriculum pacing_schedule currently requires exact_bucket_quota")
 
     scenario_records: List[Dict[str, Any]] = []
     for split_name, dataset in zip(split_names, scenario_datasets):
@@ -692,6 +711,7 @@ def distributed_curriculum_sampler_init(
             max_cumulative_exposure_per_group=max_cumulative_exposure_per_near_duplicate_group,
             batch_size=batch_size,
             accumulate_grad_batches=accumulate_grad_batches,
+            pacing_schedule=pacing_schedule,
         )
         distributed_weighted_sampler = DistributedSamplerWrapper(sampler)
         return distributed_weighted_sampler
@@ -949,6 +969,7 @@ class CustomDataModule(pl.LightningDataModule):
         curriculum_max_cumulative_exposure_per_scenario: int = 0,
         curriculum_max_cumulative_exposure_per_near_duplicate_group: int = 0,
         curriculum_accumulate_grad_batches: int = 1,
+        curriculum_pacing_schedule: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Initialize the class.
@@ -1029,6 +1050,7 @@ class CustomDataModule(pl.LightningDataModule):
         self._curriculum_accumulate_grad_batches = max(
             1, int(curriculum_accumulate_grad_batches)
         )
+        self._curriculum_pacing_schedule = dict(curriculum_pacing_schedule or {})
 
     @property
     def feature_and_targets_builder(self) -> FeaturePreprocessor:
@@ -1163,6 +1185,7 @@ class CustomDataModule(pl.LightningDataModule):
                 max_cumulative_exposure_per_near_duplicate_group=self._curriculum_max_cumulative_exposure_per_near_duplicate_group,
                 batch_size=int(self._dataloader_params.get("batch_size", 1)),
                 accumulate_grad_batches=self._curriculum_accumulate_grad_batches,
+                pacing_schedule=self._curriculum_pacing_schedule,
             )
             
             # Combine all datasets into one

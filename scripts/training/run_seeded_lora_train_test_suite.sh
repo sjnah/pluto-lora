@@ -48,7 +48,7 @@ LOSS_VERSION="${LOSS_VERSION:-$CFG_SUITE_LOSS_VERSION}"
 RANDOM_BUCKET_VERSION="${RANDOM_BUCKET_VERSION:-$CFG_SUITE_RANDOM_VERSION}"
 MPOC_VERSION="${MPOC_VERSION:-$CFG_SUITE_MPOC_VERSION}"
 UNIFORM_VERSION="${UNIFORM_VERSION:-$CFG_SUITE_UNIFORM_VERSION}"
-PERCENTILE_EHU_FINAL_PHASE="${PERCENTILE_EHU_FINAL_PHASE:-phaseC_uniform_consolidation}"
+PERCENTILE_EHU_FINAL_PHASE="${PERCENTILE_EHU_FINAL_PHASE:-phaseC_hard_replay}"
 TYPE_ROUTING_MODE="${TYPE_ROUTING_MODE:-$CFG_SUITE_TYPE_ROUTING_MODE}"
 FEATURE_CACHE_NAME="${FEATURE_CACHE_NAME:-$CFG_SUITE_FEATURE_CACHE_NAME}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -178,6 +178,9 @@ run_method_seed() {
     echo "Train -> test: method=${method}, version=${version}, seed=${seed}"
     echo "Experiment: ${base_exp}"
     echo "Evaluation slug: ${slug}"
+    if [ "$method" = "uniform" ]; then
+        echo "Training contract: continuous 12 epochs; no curriculum phase or optimizer reset"
+    fi
     echo "============================================================"
 
     local upper_method

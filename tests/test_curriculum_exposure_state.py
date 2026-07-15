@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -7,6 +8,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+os.environ["WANDB_DISABLED"] = "true"
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+sys.modules["wandb"] = None
 
 from src.custom_training.custom_datamodule import (
     ExactBucketQuotaSampler,
@@ -22,6 +26,7 @@ class TestPersistentCurriculumExposureState(unittest.TestCase):
         proportions=None,
         phase_start_epoch=0,
         sampling_log_path=None,
+        pacing_schedule=None,
     ):
         records = [
             {
@@ -43,6 +48,7 @@ class TestPersistentCurriculumExposureState(unittest.TestCase):
             cumulative_exposure_state_path=str(state_path),
             max_cumulative_exposure_per_scenario=4,
             max_cumulative_exposure_per_group=8,
+            pacing_schedule=pacing_schedule,
         )
 
     def test_same_epoch_is_idempotent_and_next_epoch_accumulates(self):
@@ -79,6 +85,30 @@ class TestPersistentCurriculumExposureState(unittest.TestCase):
             list(sampler)
 
             changed = self._sampler(state_path, proportions=[0.5, 0.25, 0.25])
+            changed.set_epoch(0)
+            with self.assertRaisesRegex(ValueError, "configuration changed"):
+                list(changed)
+
+    def test_existing_plan_rejects_changed_pacing_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "exposure.json"
+            first_schedule = {
+                "type": "hard_replay_ramp",
+                "alpha_start": 0.0,
+                "alpha_end": 0.7,
+                "ramp_epochs": 2,
+            }
+            second_schedule = {
+                "type": "hard_replay_ramp",
+                "alpha_start": 0.0,
+                "alpha_end": 0.8,
+                "ramp_epochs": 2,
+            }
+            sampler = self._sampler(state_path, pacing_schedule=first_schedule)
+            sampler.set_epoch(0)
+            list(sampler)
+
+            changed = self._sampler(state_path, pacing_schedule=second_schedule)
             changed.set_epoch(0)
             with self.assertRaisesRegex(ValueError, "configuration changed"):
                 list(changed)

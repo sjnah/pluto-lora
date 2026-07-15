@@ -1000,7 +1000,7 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
         )
 
 
-def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = False) -> None:
+def csv_fields(include_detail: bool = False) -> list[str]:
     fields = [
         "test",
         "test_label",
@@ -1026,18 +1026,27 @@ def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = F
     if include_detail:
         fields.extend(key for _, key, _ in CLS_DETAIL_COLUMNS)
         fields.extend(["metric_means", "metric_counts"])
+    return fields
+
+
+def write_csv_rows(rows: list[dict[str, Any]], stream: Any, include_detail: bool = False) -> None:
+    fields = csv_fields(include_detail)
+    writer = csv.DictWriter(stream, fieldnames=fields)
+    writer.writeheader()
+    for row in rows:
+        flat = dict(row)
+        flat["metrics_dirs"] = ";".join(row.get("metrics_dirs", []))
+        flat["seeds"] = ";".join(str(seed) for seed in row.get("seeds", []))
+        if include_detail:
+            flat["metric_means"] = json.dumps(row.get("metric_means", {}), sort_keys=True)
+            flat["metric_counts"] = json.dumps(row.get("metric_counts", {}), sort_keys=True)
+        writer.writerow({field: flat.get(field) for field in fields})
+
+
+def write_csv(rows: list[dict[str, Any]], output: Path, include_detail: bool = False) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        for row in rows:
-            flat = dict(row)
-            flat["metrics_dirs"] = ";".join(row.get("metrics_dirs", []))
-            flat["seeds"] = ";".join(str(seed) for seed in row.get("seeds", []))
-            if include_detail:
-                flat["metric_means"] = json.dumps(row.get("metric_means", {}), sort_keys=True)
-                flat["metric_counts"] = json.dumps(row.get("metric_counts", {}), sort_keys=True)
-            writer.writerow({field: flat.get(field) for field in fields})
+        write_csv_rows(rows, f, include_detail)
 
 
 def write_json(rows: list[dict[str, Any]], output: Path) -> None:
@@ -1106,10 +1115,7 @@ def main() -> int:
         if args.output:
             write_csv(rows, args.output, args.detail)
         else:
-            writer = csv.DictWriter(sys.stdout, fieldnames=list(rows[0]) if rows else [])
-            if rows:
-                writer.writeheader()
-                writer.writerows(rows)
+            write_csv_rows(rows, sys.stdout, args.detail)
     else:
         if args.output:
             lines: list[str] = []

@@ -153,6 +153,7 @@ curriculum:
   tie_break_mode: stable_hash
   sampler_mode: legacy_weighted
   phase_name: ""
+  pacing_schedule: null
   # New percentile_ehu experiments use:
   # easy warm-up -> mild hard focus -> uniform consolidation.
   # This is not a direct Rampp reproduction; it combines easy-to-hard

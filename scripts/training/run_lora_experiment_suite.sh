@@ -135,7 +135,7 @@ run_uniform_method() {
     if is_enabled "$DRY_RUN"; then
         echo ""
         echo "=============================================="
-        echo "Uniform FT (${UNIFORM_VERSION})"
+        echo "Uniform FT: continuous 12-epoch run (${UNIFORM_VERSION})"
         echo "=============================================="
         echo "DRY_RUN: METHOD=uniform CURRICULUM_VERSION=${UNIFORM_VERSION} TRAINING_PROTOCOL_CONFIG=${TRAINING_PROTOCOL_CONFIG} bash ${LORA_EXPERIMENT_SCRIPT}"
         echo "         FEATURE_CACHE_NAME=${FEATURE_CACHE_NAME}"
@@ -145,7 +145,7 @@ run_uniform_method() {
 
     echo ""
     echo "=============================================="
-    echo "Uniform FT (${UNIFORM_VERSION})"
+    echo "Uniform FT: continuous 12-epoch run (${UNIFORM_VERSION})"
     echo "=============================================="
     set +e
     (

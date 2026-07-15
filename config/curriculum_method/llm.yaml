@@ -11,8 +11,8 @@ tie_break_mode: stable_hash
 bucketization_mode: percentile_tercile
 phase_names:
   a: easy_warmup
-  b: mild_hard_focus
-  c: uniform_consolidation
+  b: hard_ramp
+  c: hard_replay
 type_routing:
   supported: true
   default_mode: "off"

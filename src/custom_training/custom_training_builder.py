@@ -265,6 +265,7 @@ def build_lightning_datamodule(
         curriculum_accumulate_grad_batches=int(
             cfg.lightning.trainer.params.get("accumulate_grad_batches", 1)
         ),
+        curriculum_pacing_schedule=curriculum_cfg.get("pacing_schedule", None),
         **cfg.data_loader.datamodule,
     )
 

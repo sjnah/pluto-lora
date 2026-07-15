@@ -60,6 +60,10 @@ def list_literal(values: object, label: str) -> str:
     return "[" + ",".join(f"{value:.12g}" for value in numbers) + "]"
 
 
+def json_literal(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
 def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, Any]:
     protocol_file, protocol = load_yaml(protocol_path)
     method_file, method = load_yaml(method_path)
@@ -71,6 +75,12 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
     phases = require_mapping(protocol, "phases")
     cumulative = require_mapping(phases, "cumulative_epochs")
     proportions = require_mapping(phases, "bucket_target_proportions")
+    pacing = phases.get("pacing") or {}
+    if not isinstance(pacing, dict):
+        raise ValueError("phases.pacing must be a mapping when present")
+    phase_alpha = pacing.get("phase_alpha") or {}
+    if not isinstance(phase_alpha, dict):
+        raise ValueError("phases.pacing.phase_alpha must be a mapping when present")
     lora = require_mapping(protocol, "lora")
     training = require_mapping(protocol, "training")
     checkpoint = require_mapping(protocol, "checkpoint")
@@ -133,6 +143,9 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_PHASE_C_TARGET_PROPORTIONS": list_literal(
             proportions["c"], "phase C proportions"
         ),
+        "CFG_PHASE_A_PACING_SCHEDULE": json_literal(phase_alpha.get("a") or {}),
+        "CFG_PHASE_B_PACING_SCHEDULE": json_literal(phase_alpha.get("b") or {}),
+        "CFG_PHASE_C_PACING_SCHEDULE": json_literal(phase_alpha.get("c") or {}),
         "CFG_LORA_ENABLED": bool(lora["enabled"]),
         "CFG_LORA_RANK": int(lora["rank"]),
         "CFG_LORA_ALPHA": float(lora["alpha"]),

@@ -22,6 +22,7 @@ build_exposure_capped_weighted_indices = (
 )
 exact_tercile_counts = curriculum_sampling.exact_tercile_counts
 largest_remainder_counts = curriculum_sampling.largest_remainder_counts
+scheduled_target_proportions = curriculum_sampling.scheduled_target_proportions
 split_scores_into_terciles = curriculum_sampling.split_scores_into_terciles
 validate_master_score_coverage = curriculum_sampling.validate_master_score_coverage
 validate_demonstration_type_routing = curriculum_sampling.validate_demonstration_type_routing
@@ -87,7 +88,7 @@ class TestExactQuotaSampler(unittest.TestCase):
         for stats in metadata["repeat_stats"].values():
             self.assertLessEqual(stats["max_repeat"], 4)
 
-    def test_exact_quota_mild_hard_focus(self):
+    def test_exact_quota_hard_replay_fallback(self):
         bucket_sizes = [1019, 1020, 1020]
         indices, _ = build_exact_bucket_quota_indices(
             bucket_sizes,
@@ -132,6 +133,38 @@ class TestExactQuotaSampler(unittest.TestCase):
         third, _ = build_exact_bucket_quota_indices(epoch=1, **kwargs)
         self.assertEqual(first, second)
         self.assertNotEqual(first, third)
+
+    def test_hard_replay_alpha_ramp_proportions(self):
+        schedule = {
+            "type": "hard_replay_ramp",
+            "alpha_start": 0.0,
+            "alpha_end": 0.8,
+            "ramp_epochs": 4,
+            "uniform_prior": [1 / 3, 1 / 3, 1 / 3],
+            "hard_prior": [0.0, 0.0, 1.0],
+        }
+
+        start, start_meta = scheduled_target_proportions(
+            [0.7, 0.2, 0.1],
+            schedule,
+            epoch=2,
+            phase_start_epoch=2,
+        )
+        end, end_meta = scheduled_target_proportions(
+            [0.7, 0.2, 0.1],
+            schedule,
+            epoch=5,
+            phase_start_epoch=2,
+        )
+
+        self.assertEqual(start_meta["alpha"], 0.0)
+        self.assertAlmostEqual(start[0], 1 / 3)
+        self.assertAlmostEqual(start[1], 1 / 3)
+        self.assertAlmostEqual(start[2], 1 / 3)
+        self.assertAlmostEqual(end_meta["alpha"], 0.8)
+        self.assertAlmostEqual(end[0], 1 / 15)
+        self.assertAlmostEqual(end[1], 1 / 15)
+        self.assertAlmostEqual(end[2], 13 / 15)
 
 
 class TestDemonstrationTypeRoutingGuard(unittest.TestCase):

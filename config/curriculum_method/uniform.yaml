@@ -3,7 +3,8 @@ label: Uniform FT
 mode: uniform
 scenario_filter: uniform_train_all
 phase_names:
+  # a/b are retained for resolver-schema compatibility only. Uniform executes
+  # one continuous 12-epoch run using the c name as its final artifact suffix.
   a: stage1_raw
   b: stage2_uniform
   c: stage3_uniform
-

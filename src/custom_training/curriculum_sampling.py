@@ -49,6 +49,77 @@ def normalize_proportions(proportions: Sequence[float]) -> List[float]:
     return [float(p) / total for p in proportions]
 
 
+def hard_replay_mixture_proportions(
+    alpha: float,
+    *,
+    uniform_prior: Sequence[float] = (1 / 3, 1 / 3, 1 / 3),
+    hard_prior: Sequence[float] = (0.0, 0.0, 1.0),
+) -> List[float]:
+    """Return q=(1-alpha)U+alpha H for easy/medium/hard buckets."""
+    alpha = float(alpha)
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
+    uniform = normalize_proportions(uniform_prior)
+    hard = normalize_proportions(hard_prior)
+    return [
+        (1.0 - alpha) * uniform_value + alpha * hard_value
+        for uniform_value, hard_value in zip(uniform, hard)
+    ]
+
+
+def scheduled_target_proportions(
+    base_proportions: Sequence[float],
+    schedule: Mapping[str, object] | None,
+    *,
+    epoch: int,
+    phase_start_epoch: int,
+) -> Tuple[List[float], Dict[str, object]]:
+    """Resolve epoch-specific bucket proportions for optional pacing schedules."""
+    base = normalize_proportions(base_proportions)
+    if not schedule:
+        return base, {}
+
+    schedule_type = str(schedule.get("type", "")).strip().lower()
+    if schedule_type in {"", "none", "static"}:
+        return base, {}
+    if schedule_type != "hard_replay_ramp":
+        raise ValueError(f"Unsupported curriculum pacing schedule type: {schedule_type}")
+
+    alpha_start = float(schedule.get("alpha_start", 0.0))
+    alpha_end = float(schedule["alpha_end"])
+    if not 0.0 <= alpha_start <= 1.0:
+        raise ValueError(f"alpha_start must be in [0, 1], got {alpha_start}")
+    if not 0.0 <= alpha_end <= 1.0:
+        raise ValueError(f"alpha_end must be in [0, 1], got {alpha_end}")
+    ramp_epochs = max(1, int(schedule.get("ramp_epochs", 1)))
+    local_epoch = max(0, int(epoch) - int(phase_start_epoch))
+    if ramp_epochs <= 1:
+        progress = 1.0
+    else:
+        progress = min(1.0, local_epoch / float(ramp_epochs - 1))
+    alpha = alpha_start + (alpha_end - alpha_start) * progress
+    proportions = hard_replay_mixture_proportions(
+        alpha,
+        uniform_prior=schedule.get("uniform_prior", (1 / 3, 1 / 3, 1 / 3)),
+        hard_prior=schedule.get("hard_prior", (0.0, 0.0, 1.0)),
+    )
+    return proportions, {
+        "type": schedule_type,
+        "alpha": alpha,
+        "alpha_start": alpha_start,
+        "alpha_end": alpha_end,
+        "ramp_epochs": ramp_epochs,
+        "local_epoch": local_epoch,
+        "progress": progress,
+        "uniform_prior": normalize_proportions(
+            schedule.get("uniform_prior", (1 / 3, 1 / 3, 1 / 3))
+        ),
+        "hard_prior": normalize_proportions(
+            schedule.get("hard_prior", (0.0, 0.0, 1.0))
+        ),
+    }
+
+
 def largest_remainder_counts(total: int, proportions: Sequence[float]) -> List[int]:
     """Convert proportions to integer draw counts with largest remainder."""
     if total < 0:
