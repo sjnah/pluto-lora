@@ -238,6 +238,11 @@ run_lora_train() {
     local require_protocol_match="$7"
     shift 7
 
+    local execution_mode=staged_curriculum
+    if [ "$CFG_METHOD_MODE" = "uniform" ]; then
+        execution_mode=continuous_uniform
+    fi
+
     local cache_overrides=()
     if [ -n "$FEATURE_CACHE_PATH" ]; then
         cache_overrides+=("cache.cache_path=$FEATURE_CACHE_PATH")
@@ -263,6 +268,7 @@ run_lora_train() {
         "lora.training_protocol_sha256=$PROTOCOL_SHA256"
         "lora.curriculum_method_id=$METHOD"
         "lora.curriculum_method_sha256=$METHOD_SHA256"
+        "lora.execution_mode=$execution_mode"
         "lora.require_protocol_match_on_resume=$require_protocol_match"
         "lr=$LR"
         "weight_decay=$WEIGHT_DECAY"

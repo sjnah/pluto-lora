@@ -81,7 +81,9 @@ find_checkpoint_for_experiment() {
     local required_seed="${2:-}"
     local required_protocol_id="${3:-$TRAINING_PROTOCOL_ID}"
     local required_protocol_sha256="${4:-$TRAINING_PROTOCOL_SHA256}"
+    local required_execution_mode="${5:-}"
     local exp_dir parent_dir candidate config_file config_seed protocol_identity
+    local actual_protocol_id actual_protocol_sha256 actual_execution_mode
 
     while IFS= read -r exp_dir; do
         [ -n "$exp_dir" ] || continue
@@ -100,10 +102,20 @@ import yaml
 path = Path(sys.argv[1])
 payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 lora = payload.get("lora") or {}
-print(f"{lora.get('training_protocol_id', '')}|{lora.get('training_protocol_sha256', '')}")
+print(
+    f"{lora.get('training_protocol_id', '')}|"
+    f"{lora.get('training_protocol_sha256', '')}|"
+    f"{lora.get('execution_mode', '')}"
+)
 PY
 )"
-        [ "$protocol_identity" = "${required_protocol_id}|${required_protocol_sha256}" ] || continue
+        IFS='|' read -r actual_protocol_id actual_protocol_sha256 actual_execution_mode \
+            <<< "$protocol_identity"
+        [ "$actual_protocol_id" = "$required_protocol_id" ] || continue
+        [ "$actual_protocol_sha256" = "$required_protocol_sha256" ] || continue
+        if [ -n "$required_execution_mode" ]; then
+            [ "$actual_execution_mode" = "$required_execution_mode" ] || continue
+        fi
         for candidate in \
             "${exp_dir}/lora_checkpoints/merged_final.ckpt" \
             "${exp_dir}/checkpoints/last.ckpt" \
@@ -126,12 +138,17 @@ find_completed_training_checkpoint() {
     local final_exp="$1"
     local legacy_exp="${2:-}"
     local seed="${3:-}"
+    local required_execution_mode="${4:-}"
 
-    find_checkpoint_for_experiment "$final_exp" "$seed" && return 0
+    find_checkpoint_for_experiment \
+        "$final_exp" "$seed" "$TRAINING_PROTOCOL_ID" \
+        "$TRAINING_PROTOCOL_SHA256" "$required_execution_mode" && return 0
     if [ -n "$legacy_exp" ]; then
         # Compatibility for early seeded-wrapper runs whose type-routing
         # experiment name accidentally omitted `_seedN`.
-        find_checkpoint_for_experiment "$legacy_exp" "$seed" && return 0
+        find_checkpoint_for_experiment \
+            "$legacy_exp" "$seed" "$TRAINING_PROTOCOL_ID" \
+            "$TRAINING_PROTOCOL_SHA256" "$required_execution_mode" && return 0
     fi
     return 1
 }
@@ -188,8 +205,12 @@ run_method_seed() {
     [ "$method" = random ] && upper_method=RANDOM_BUCKET
 
     local completed_training="" completed_checkpoint="" evaluation_exp="$final_exp"
+    local required_execution_mode=""
+    [ "$method" = "uniform" ] && required_execution_mode=continuous_uniform
     if is_enabled "$SKIP_TRAINING_IF_CHECKPOINT_EXISTS"; then
-        completed_training="$(find_completed_training_checkpoint "$final_exp" "$legacy_final_exp" "$seed" || true)"
+        completed_training="$(find_completed_training_checkpoint \
+            "$final_exp" "$legacy_final_exp" "$seed" \
+            "$required_execution_mode" || true)"
         if [ -n "$completed_training" ]; then
             completed_checkpoint="${completed_training%%|*}"
             evaluation_exp="${completed_training#*|}"

@@ -48,6 +48,10 @@ train_mode: uniform
 # LoRA configuration
 lora:
   enabled: ${training_protocol.lora.enabled}
+  # Persist the orchestration contract in Hydra output. The canonical Uniform
+  # runner overrides this so old staged Uniform checkpoints are not reused as
+  # continuous baselines.
+  execution_mode: staged_curriculum
   rank: ${training_protocol.lora.rank}
   alpha: ${training_protocol.lora.alpha}
   dropout: ${training_protocol.lora.dropout}
