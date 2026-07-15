@@ -10,13 +10,20 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 PLUTO_FILTER_DIR="${REPO_ROOT}/config/scenario_filter"
 CONFIG_RESOLVER="${SCRIPT_DIR}/resolve_lora_experiment_config.py"
+export PLUTO_CONFIG_ROOT="${PLUTO_CONFIG_ROOT:-${REPO_ROOT}/config}"
 
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/python_runtime.sh"
 
 METHOD="${METHOD:-llm}"
 TRAINING_PROTOCOL_CONFIG="${TRAINING_PROTOCOL_CONFIG:-${REPO_ROOT}/config/training_protocol/flat_area_matched_v1.yaml}"
-METHOD_CONFIG="${METHOD_CONFIG:-${REPO_ROOT}/config/curriculum_method/${METHOD}.yaml}"
+if [ -z "${METHOD_CONFIG:-}" ]; then
+    if [ "$METHOD" = llm ]; then
+        METHOD_CONFIG="${REPO_ROOT}/config/curriculum_method/llm_capped.yaml"
+    else
+        METHOD_CONFIG="${REPO_ROOT}/config/curriculum_method/${METHOD}.yaml"
+    fi
+fi
 
 eval "$("$PYTHON_BIN" "$CONFIG_RESOLVER" \
     --protocol "$TRAINING_PROTOCOL_CONFIG" \
@@ -121,6 +128,7 @@ MAX_REPEAT_PER_SCENARIO="$CFG_MAX_REPEAT_PER_SCENARIO"
 HARD_SUBTYPE_BALANCE="$CFG_HARD_SUBTYPE_BALANCE"
 CURRICULUM_METHOD="$CFG_CURRICULUM_METHOD"
 MAX_REPEAT_PER_NEAR_DUPLICATE_GROUP="$CFG_MAX_REPEAT_PER_NEAR_DUPLICATE_GROUP"
+NEAR_DUPLICATE_GROUP_WEIGHTING="$CFG_NEAR_DUPLICATE_GROUP_WEIGHTING"
 MAX_CUMULATIVE_EXPOSURE_PER_SCENARIO="$CFG_MAX_CUMULATIVE_EXPOSURE_PER_SCENARIO"
 MAX_CUMULATIVE_EXPOSURE_PER_NEAR_DUPLICATE_GROUP="$CFG_MAX_CUMULATIVE_EXPOSURE_PER_NEAR_DUPLICATE_GROUP"
 
@@ -427,6 +435,7 @@ run_phase() {
         "curriculum.demonstration_type_metadata_path=$DEMONSTRATION_TYPE_METADATA_PATH" \
         "curriculum.demonstration_type_policy.stage_role=$stage_role" \
         "curriculum.max_repeat_per_near_duplicate_group=$MAX_REPEAT_PER_NEAR_DUPLICATE_GROUP" \
+        "curriculum.near_duplicate_group_weighting=$NEAR_DUPLICATE_GROUP_WEIGHTING" \
         "curriculum.cumulative_exposure_state_path=$CUMULATIVE_EXPOSURE_STATE_PATH" \
         "curriculum.max_cumulative_exposure_per_scenario=$MAX_CUMULATIVE_EXPOSURE_PER_SCENARIO" \
         "curriculum.max_cumulative_exposure_per_near_duplicate_group=$MAX_CUMULATIVE_EXPOSURE_PER_NEAR_DUPLICATE_GROUP" \

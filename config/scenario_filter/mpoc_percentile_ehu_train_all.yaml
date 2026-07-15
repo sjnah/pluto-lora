@@ -1,6 +1,6 @@
 # MPOC Percentile Tercile Training Set (All)
 # All percentile-tercile buckets combined for method=mpoc, seed=42
-# Total scenarios: 3059
+# Total scenarios: 3058
 
 '_target_': 'nuplan.planning.scenario_builder.scenario_filter.ScenarioFilter'
 '_convert_': 'all'
@@ -2254,7 +2254,6 @@
 - 'be04a2b82d6c5f2a'
 - '7613372541d45e84'
 - '179c5ff5627d5cb7'
-- '11450d849eed59aa'
 - '1119c5207c0753e9'
 - 'b608acc5152b5aba'
 - '74376d6725f45e8c'

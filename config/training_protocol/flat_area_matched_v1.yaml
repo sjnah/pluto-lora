@@ -1,5 +1,10 @@
 protocol_id: flat_area_matched_v1
 
+runtime:
+  # Shared feature cache identity for every method and seed using this protocol.
+  # Bump only when the base PLUTO feature-builder/serialization contract changes.
+  feature_cache_name: flat_lr_comparison_v1_pluto_feature_v1
+
 # One optimizer/scheduler trajectory is resumed across cumulative 2/6/12
 # Lightning boundaries. The LR-step integral matches the former 804-step
 # warmup-100 cosine schedule (LoRA peak 5e-5, terminal 1e-6).

@@ -1,0 +1,135 @@
+suite_id: paper_main_v1
+training_protocol: config/training_protocol/flat_area_matched_v1.yaml
+
+workflow:
+  mode: train_and_evaluate # train_and_evaluate | train_only | evaluate_only
+  continue_on_failure: false
+  dry_run: false
+
+selection:
+  arms:
+    # - zero_shot
+    # - uniform
+    # - random_exact
+    # - rule_exact
+    # - loss_exact
+    # - mpoc_exact
+    - llm_exact_off
+    - llm_capped_off
+    # - llm_capped_on
+  seeds: [1] # [1,2,3,4,5]
+  benchmarks:
+    # - val14
+    # - val14-fast
+    # - test14-hard
+    # - test14-hard-fast
+    - interplan10
+
+training:
+  existing_checkpoint: reuse # reuse | retrain | error
+  resume_policy: auto # auto | fresh | require_resume
+  pretrained_checkpoint: checkpoints/pluto_1M_aux_cil.ckpt
+  retrain_tag: null
+
+evaluation:
+  require_completed_checkpoint: true
+  disable_simulation_log: true
+  collect_results: true
+
+# Optional paths for importing already-trained legacy outputs. Keys under an
+# arm are seed numbers represented as strings.
+checkpoint_overrides: {}
+
+arms:
+  zero_shot:
+    kind: zero_shot
+    label: Zero-shot
+    evaluation_slug_template: zeroshot
+
+  uniform:
+    kind: trainable
+    label: Uniform FT
+    method: uniform
+    artifact_version: v1.19
+    method_config: config/curriculum_method/uniform.yaml
+    sampler_contract: uniform
+    routing_mode: "off"
+    experiment_base_template: uniform_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: uniform_{artifact_version}_{protocol_id}_seed{seed}
+
+  random_exact:
+    kind: trainable
+    label: RandomBucket exact
+    method: random
+    artifact_version: v1.19
+    method_config: config/curriculum_method/random.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: random_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: random_{artifact_version}_{protocol_id}_seed{seed}
+
+  rule_exact:
+    kind: trainable
+    label: Rule-based exact
+    method: rule
+    artifact_version: v3.19
+    method_config: config/curriculum_method/rule.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: rule_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: rule_{artifact_version}_{protocol_id}_seed{seed}
+
+  loss_exact:
+    kind: trainable
+    label: Loss-ranked exact
+    method: loss
+    artifact_version: v1.19
+    method_config: config/curriculum_method/loss.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: loss_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: loss_{artifact_version}_{protocol_id}_seed{seed}
+
+  mpoc_exact:
+    kind: trainable
+    label: MPOC exact
+    method: mpoc
+    artifact_version: v1.19
+    method_config: config/curriculum_method/mpoc.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: mpoc_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: mpoc_{artifact_version}_{protocol_id}_seed{seed}
+
+  llm_exact_off:
+    kind: trainable
+    label: LLM exact (type-off)
+    method: llm
+    artifact_version: v5.0.4.0.19
+    method_config: config/curriculum_method/llm_exact_off.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
+    evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
+
+  llm_capped_off:
+    kind: trainable
+    label: LLM capped weighted (type-off)
+    method: llm
+    artifact_version: v5.0.4.0.19
+    method_config: config/curriculum_method/llm_capped.yaml
+    sampler_contract: capped_weighted
+    routing_mode: "off"
+    experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_type_off_seed{seed}
+    evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_type_off_seed{seed}
+
+  llm_capped_on:
+    kind: trainable
+    label: LLM capped weighted (type-on)
+    method: llm
+    artifact_version: v5.0.4.0.19
+    method_config: config/curriculum_method/llm_capped.yaml
+    sampler_contract: capped_weighted
+    routing_mode: "on"
+    experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_type_on_seed{seed}
+    evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_type_on_seed{seed}

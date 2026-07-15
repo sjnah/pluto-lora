@@ -216,6 +216,9 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_MAX_REPEAT_PER_NEAR_DUPLICATE_GROUP": int(
             exposure.get("max_repeat_per_near_duplicate_group", 0)
         ),
+        "CFG_NEAR_DUPLICATE_GROUP_WEIGHTING": bool(
+            exposure.get("near_duplicate_group_weighting", False)
+        ),
         "CFG_MAX_CUMULATIVE_EXPOSURE_PER_SCENARIO": max_scenario,
         "CFG_MAX_CUMULATIVE_EXPOSURE_PER_NEAR_DUPLICATE_GROUP": max_group,
         "CFG_TYPE_ROUTING_SUPPORTED": bool(type_routing.get("supported", False)),
@@ -229,58 +232,6 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
     }
 
 
-def resolve_suite(suite_path: str) -> dict[str, Any]:
-    suite_file, suite = load_yaml(suite_path)
-    suite_id = require_id(suite.get("suite_id"), "suite_id")
-    methods = require_mapping(suite, "methods")
-    seeds = require_mapping(suite, "seeds")
-    evaluation = require_mapping(suite, "evaluation")
-    runtime = require_mapping(suite, "runtime")
-    protocol_value = str(suite["training_protocol"])
-    protocol_path = Path(protocol_value)
-    if not protocol_path.is_absolute():
-        protocol_path = (REPO_ROOT / protocol_path).resolve()
-
-    result: dict[str, Any] = {
-        "CFG_SUITE_PATH": str(suite_file),
-        "CFG_SUITE_ID": suite_id,
-        "CFG_SUITE_SHA256": digest(suite),
-        "CFG_SUITE_TRAINING_PROTOCOL": str(protocol_path),
-        "CFG_SUITE_SEED_START": int(seeds["start"]),
-        "CFG_SUITE_SEED_END": int(seeds["end"]),
-        "CFG_SUITE_FEATURE_CACHE_NAME": require_id(
-            runtime.get("feature_cache_name"), "runtime.feature_cache_name"
-        ),
-        "CFG_SUITE_TYPE_ROUTING_MODE": str(runtime["type_routing_mode"]),
-        "CFG_SUITE_CONTINUE_ON_FAILURE": bool(runtime["continue_on_failure"]),
-        "CFG_SUITE_DISABLE_SIMULATION_LOG": bool(
-            runtime["disable_simulation_log"]
-        ),
-        "CFG_SUITE_SKIP_TRAINING_IF_CHECKPOINT_EXISTS": bool(
-            runtime["skip_training_if_checkpoint_exists"]
-        ),
-    }
-    for method in ("llm", "rule", "loss", "random", "mpoc", "uniform"):
-        entry = methods.get(method) or {}
-        if not isinstance(entry, dict):
-            raise ValueError(f"suite methods.{method} must be a mapping")
-        upper = method.upper()
-        result[f"CFG_SUITE_RUN_{upper}"] = bool(entry.get("enabled", False))
-        result[f"CFG_SUITE_{upper}_VERSION"] = str(
-            entry.get("artifact_version", "")
-        )
-    for key in (
-        "val14",
-        "val14_fast",
-        "test14_hard",
-        "test14_hard_fast",
-        "interplan10",
-        "interplan_benchmark",
-    ):
-        result[f"CFG_SUITE_RUN_{key.upper()}"] = bool(evaluation[key])
-    return result
-
-
 def shell_value(value: object) -> str:
     if isinstance(value, bool):
         value = "true" if value else "false"
@@ -291,19 +242,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--protocol")
     parser.add_argument("--method")
-    parser.add_argument("--suite")
     parser.add_argument("--format", choices=("shell", "json"), default="shell")
     parser.add_argument("--output")
     args = parser.parse_args()
 
-    if args.suite:
-        if args.protocol or args.method:
-            parser.error("--suite cannot be combined with --protocol/--method")
-        resolved = resolve_suite(args.suite)
-    else:
-        if not args.protocol or not args.method:
-            parser.error("--protocol and --method are required together")
-        resolved = resolve_protocol_method(args.protocol, args.method)
+    if not args.protocol or not args.method:
+        parser.error("--protocol and --method are required together")
+    resolved = resolve_protocol_method(args.protocol, args.method)
 
     if args.format == "json":
         rendered = json.dumps(resolved, indent=2, sort_keys=True) + "\n"

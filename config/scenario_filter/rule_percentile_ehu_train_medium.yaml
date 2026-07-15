@@ -1,6 +1,6 @@
 # RULE Percentile Tercile Training Set (medium)
 # Exact percentile-tercile curriculum bucket. method=rule, seed=42, bucketization_mode=percentile_tercile
-# Total scenarios: 1020
+# Total scenarios: 1019
 
 '_target_': 'nuplan.planning.scenario_builder.scenario_filter.ScenarioFilter'
 '_convert_': 'all'
@@ -688,7 +688,6 @@
 - '2d5d87a23660596a'
 - 'b97806f890355777'
 - '179c5ff5627d5cb7'
-- '11450d849eed59aa'
 - 'eb61685a42b15295'
 - '3649eaaa8a145af7'
 - 'cce2541259b95a43'

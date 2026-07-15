@@ -32,13 +32,38 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONFIG_RESOLVER="${REPO_ROOT}/scripts/training/resolve_lora_experiment_config.py"
-QUICK_TEST_UNIFIED="${SCRIPT_DIR}/quick_test_unified.sh"
 
 cd "$REPO_ROOT"
 
-EXPERIMENT_SUITE_CONFIG="${EXPERIMENT_SUITE_CONFIG:-${REPO_ROOT}/config/experiment_suite/flat_lr_comparison_v1.yaml}"
-eval "$(python3 "$CONFIG_RESOLVER" --suite "$EXPERIMENT_SUITE_CONFIG" --format shell)"
-TRAINING_PROTOCOL_CONFIG="${TRAINING_PROTOCOL_CONFIG:-$CFG_SUITE_TRAINING_PROTOCOL}"
+BENCHMARK_CONFIG="${BENCHMARK_CONFIG:-${REPO_ROOT}/config/benchmark/paper_main_v1.yaml}"
+eval "$(python3 - "$BENCHMARK_CONFIG" "$REPO_ROOT" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+import yaml
+
+config_path = Path(sys.argv[1]).resolve()
+repo_root = Path(sys.argv[2]).resolve()
+payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+arms = payload["arms"]
+protocol_path = Path(payload["training_protocol"])
+if not protocol_path.is_absolute():
+    protocol_path = (repo_root / protocol_path).resolve()
+
+values = {
+    "CFG_BENCHMARK_ID": payload["suite_id"],
+    "CFG_BENCHMARK_TRAINING_PROTOCOL": str(protocol_path),
+    "CFG_BENCHMARK_UNIFORM_VERSION": arms["uniform"]["artifact_version"],
+    "CFG_BENCHMARK_RANDOM_VERSION": arms["random_exact"]["artifact_version"],
+    "CFG_BENCHMARK_LLM_VERSION": arms["llm_capped_on"]["artifact_version"],
+    "CFG_BENCHMARK_MPOC_VERSION": arms["mpoc_exact"]["artifact_version"],
+}
+for key, value in values.items():
+    print(f"{key}={shlex.quote(str(value))}")
+PY
+)"
+TRAINING_PROTOCOL_CONFIG="${TRAINING_PROTOCOL_CONFIG:-$CFG_BENCHMARK_TRAINING_PROTOCOL}"
 
 METHODS="${METHODS:-uniform,random,llm}"
 SEEDS="${SEEDS:-1,2,3}"
@@ -51,13 +76,14 @@ PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
 COLLECT_RESULTS="${COLLECT_RESULTS:-true}"
 CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-false}"
 DISABLE_SIMULATION_LOG="${DISABLE_SIMULATION_LOG:-true}"
-TYPE_ROUTING_MODE="${TYPE_ROUTING_MODE:-$CFG_SUITE_TYPE_ROUTING_MODE}"
+TYPE_ROUTING_MODE="${TYPE_ROUTING_MODE:-on}"
+LLM_SOURCE_STYLE="${LLM_SOURCE_STYLE:-capped}"
 SKIP_UNIFORM_INTERMEDIATE_PHASES="${SKIP_UNIFORM_INTERMEDIATE_PHASES:-true}"
 
-LLM_VERSION="${LLM_VERSION:-$CFG_SUITE_LLM_VERSION}"
-RANDOM_BUCKET_VERSION="${RANDOM_BUCKET_VERSION:-$CFG_SUITE_RANDOM_VERSION}"
-UNIFORM_VERSION="${UNIFORM_VERSION:-$CFG_SUITE_UNIFORM_VERSION}"
-MPOC_VERSION="${MPOC_VERSION:-$CFG_SUITE_MPOC_VERSION}"
+LLM_VERSION="${LLM_VERSION:-$CFG_BENCHMARK_LLM_VERSION}"
+RANDOM_BUCKET_VERSION="${RANDOM_BUCKET_VERSION:-$CFG_BENCHMARK_RANDOM_VERSION}"
+UNIFORM_VERSION="${UNIFORM_VERSION:-$CFG_BENCHMARK_UNIFORM_VERSION}"
+MPOC_VERSION="${MPOC_VERSION:-$CFG_BENCHMARK_MPOC_VERSION}"
 
 TEMP_VIEW_ROOT="${REPO_ROOT}/outputs/.phase_checkpoint_eval_views_$$"
 RESULT_SLUGS=()
@@ -139,8 +165,18 @@ method_run_flag() {
     case "$1" in
         uniform) printf 'RUN_UNIFORM' ;;
         random) printf 'RUN_RANDOM_BUCKET' ;;
-        llm) printf 'RUN_LLM' ;;
+        llm) printf 'RUN_LLM_CURRICULUM' ;;
         mpoc) printf 'RUN_MPOC' ;;
+        *) return 1 ;;
+    esac
+}
+
+method_version_override() {
+    case "$1" in
+        uniform) printf 'UNIFORM_CURRICULUM_VERSION' ;;
+        random) printf 'RANDOM_BUCKET_CURRICULUM_VERSION' ;;
+        llm) printf 'LLM_CURRICULUM_VERSION' ;;
+        mpoc) printf 'MPOC_CURRICULUM_VERSION' ;;
         *) return 1 ;;
     esac
 }
@@ -168,6 +204,7 @@ method_slug_override() {
 resolve_method_contract() {
     local method="$1"
     local method_config="${REPO_ROOT}/config/curriculum_method/${method}.yaml"
+    [ "$method" = llm ] && method_config="${REPO_ROOT}/config/curriculum_method/llm_capped.yaml"
     eval "$(python3 "$CONFIG_RESOLVER" \
         --protocol "$TRAINING_PROTOCOL_CONFIG" \
         --method "$method_config" \
@@ -188,8 +225,10 @@ source_experiment_name() {
         llm)
             if [ "$TYPE_ROUTING_MODE" = "on" ] || [ "$TYPE_ROUTING_MODE" = "enabled" ]; then
                 base="curriculum_lora_llm_percentile_ehu_${version}_${CFG_PROTOCOL_ID}_type_on_seed${seed}"
+            elif [ "$LLM_SOURCE_STYLE" = "exact" ]; then
+                base="curriculum_lora_llm_percentile_ehu_${version}_${CFG_PROTOCOL_ID}_exact_off_seed${seed}"
             else
-                base="curriculum_lora_llm_percentile_ehu_${version}_${CFG_PROTOCOL_ID}_seed${seed}"
+                base="curriculum_lora_llm_percentile_ehu_${version}_${CFG_PROTOCOL_ID}_type_off_seed${seed}"
             fi
             ;;
         random|mpoc)
@@ -201,11 +240,7 @@ source_experiment_name() {
     esac
 
     if [ "$method" = "uniform" ]; then
-        case "$phase" in
-            a) printf '%s_%s' "$base" "$CFG_PHASE_A_NAME" ;;
-            b) printf '%s_%s' "$base" "$CFG_PHASE_B_NAME" ;;
-            c) printf '%s_%s' "$base" "$CFG_PHASE_C_NAME" ;;
-        esac
+        printf '%s' "$base"
     else
         case "$phase" in
             a) printf '%s_phaseA_%s' "$base" "$CFG_PHASE_A_NAME" ;;
@@ -244,6 +279,48 @@ should_skip_phase() {
     return 1
 }
 
+run_benchmark_leaf() {
+    local benchmark="$1"
+    local command=()
+    case "$benchmark" in
+        val14)
+            command=(bash "${SCRIPT_DIR}/quick_test_val14.sh")
+            ;;
+        val14-fast)
+            export FILTER_NAME=val14-fast EXPERIMENT_SUFFIX=val14_fast
+            export TEST_LABEL="Val14 Fast" SCENARIO_BUILDER=nuplan_v1_1_val
+            export COLLECT_TEST=val14-fast SCENARIOS_PER_STAGE=auto
+            command=(bash "${SCRIPT_DIR}/quick_test_val14.sh")
+            ;;
+        test14-hard)
+            command=(bash "${SCRIPT_DIR}/quick_test_test14-hard.sh")
+            ;;
+        test14-hard-fast)
+            export FILTER_NAME=test14-hard-fast EXPERIMENT_SUFFIX=test14_hard_fast
+            export TEST_LABEL="Test14-Hard Fast" SCENARIO_BUILDER=nuplan_v1_1_test
+            export COLLECT_TEST=test14-hard-fast SCENARIOS_PER_STAGE=auto
+            command=(bash "${SCRIPT_DIR}/quick_test_test14-hard.sh")
+            ;;
+        interplan10)
+            command=(bash "${SCRIPT_DIR}/quick_test_interplan.sh" interplan10)
+            ;;
+        interplan-benchmark)
+            command=(bash "${SCRIPT_DIR}/quick_test_interplan.sh" benchmark_scenarios)
+            ;;
+        *)
+            echo "Error: unsupported benchmark: $benchmark" >&2
+            return 2
+            ;;
+    esac
+    if is_enabled "$DRY_RUN"; then
+        printf 'DRY_RUN:'
+        printf ' %q' "${command[@]}"
+        printf '\n'
+        return 0
+    fi
+    "${command[@]}"
+}
+
 run_zero_shot_reference() {
     local benchmark="$1"
     local checkpoint="${REPO_ROOT}/checkpoints/pluto_1M_aux_cil.ckpt"
@@ -267,12 +344,13 @@ run_zero_shot_reference() {
     fi
 
     set +e
-    env \
-        RUN_ZERO_SHOT=true RUN_RULE=false RUN_LOSS=false \
-        RUN_UNIFORM=false RUN_RANDOM_BUCKET=false RUN_LLM=false RUN_MPOC=false \
-        DISABLE_SIMULATION_LOG="$DISABLE_SIMULATION_LOG" \
-        DRY_RUN="$DRY_RUN" \
-        bash "$QUICK_TEST_UNIFIED" "$benchmark"
+    (
+        export RUN_ZERO_SHOT=true RUN_RULE_BASED=false RUN_LOSS_BASED=false
+        export RUN_UNIFORM=false RUN_RANDOM_BUCKET=false RUN_LLM_CURRICULUM=false RUN_MPOC=false
+        export DISABLE_SIMULATION_LOG
+        export SKIP_RESULT_COLLECTION=$([ "$COLLECT_RESULTS" = true ] && echo false || echo true)
+        run_benchmark_leaf "$benchmark"
+    )
     local status=$?
     set -e
 
@@ -290,7 +368,7 @@ run_one() {
     local variant="$4"
     local benchmark="$5"
     local phase version source_exp source_dir filename source_ckpt slug view_exp view_dir
-    local run_flag exp_override slug_override
+    local run_flag exp_override slug_override version_override
 
     phase="$(phase_key_lower "$phase_upper")" || {
         echo "Error: unsupported phase: $phase_upper (use A, B, or C)" >&2
@@ -355,24 +433,21 @@ run_one() {
     run_flag="$(method_run_flag "$method")"
     exp_override="$(method_exp_override "$method")"
     slug_override="$(method_slug_override "$method")"
+    version_override="$(method_version_override "$method")"
 
     set +e
-    env \
-        RUN_ZERO_SHOT=false RUN_RULE=false RUN_LOSS=false \
-        RUN_UNIFORM=false RUN_RANDOM_BUCKET=false RUN_LLM=false RUN_MPOC=false \
-        "$run_flag=true" \
-        "$exp_override=$view_exp" \
-        "$slug_override=$slug" \
-        LLM_VERSION="$LLM_VERSION" \
-        RANDOM_BUCKET_VERSION="$RANDOM_BUCKET_VERSION" \
-        UNIFORM_VERSION="$UNIFORM_VERSION" \
-        MPOC_VERSION="$MPOC_VERSION" \
-        TRAINING_PROTOCOL_ID="$CFG_PROTOCOL_ID" \
-        TYPE_ROUTING_MODE="$TYPE_ROUTING_MODE" \
-        RUN_LLM_TYPE_ROUTING_COMPARISON=false \
-        DISABLE_SIMULATION_LOG="$DISABLE_SIMULATION_LOG" \
-        DRY_RUN="$DRY_RUN" \
-        bash "$QUICK_TEST_UNIFIED" "$benchmark"
+    (
+        export RUN_ZERO_SHOT=false RUN_RULE_BASED=false RUN_LOSS_BASED=false
+        export RUN_UNIFORM=false RUN_RANDOM_BUCKET=false RUN_LLM_CURRICULUM=false RUN_MPOC=false
+        export "$run_flag=true"
+        export "$exp_override=$source_exp"
+        export "$slug_override=$slug"
+        export "$version_override=$version"
+        export PLUTO_EVAL_CHECKPOINT="${source_ckpt:-$source_exp}"
+        export DISABLE_SIMULATION_LOG
+        export SKIP_RESULT_COLLECTION=$([ "$COLLECT_RESULTS" = true ] && echo false || echo true)
+        run_benchmark_leaf "$benchmark"
+    )
     local status=$?
     set -e
 
@@ -434,7 +509,7 @@ else
     uniform_phase_policy="evaluate requested phases"
 fi
 echo "Phase checkpoint ablation"
-echo "Suite:       $CFG_SUITE_ID"
+echo "Benchmark:   $CFG_BENCHMARK_ID"
 echo "Protocol:    $TRAINING_PROTOCOL_CONFIG"
 echo "Methods:     $METHODS"
 echo "Seeds:       $SEEDS"

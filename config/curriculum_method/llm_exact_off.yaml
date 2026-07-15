@@ -1,5 +1,5 @@
 method: llm
-label: LLM-guided
+label: LLM-guided exact (type-off)
 mode: bucketed
 filter_prefix: llm_percentile_ehu
 score_method: llm
@@ -17,11 +17,11 @@ type_routing:
   supported: true
   default_mode: "off"
   metadata_path: ../llm-taxonomy/artifacts/rationales_ssg_text_v4_0_train_normalized.csv
-  enabled_sampler_mode: legacy_weighted
+  enabled_sampler_mode: exact_bucket_quota
 exposure:
-  persistent: true
-  max_repeat_per_near_duplicate_group: 8
-  # Match the per-epoch repeat cap. The former value 2 produced a total cap of
-  # 24, leaving only ~2.6% capacity above the 12-epoch hard-replay demand.
-  max_cumulative_exposure_per_scenario_per_epoch: 4
-  max_cumulative_exposure_per_near_duplicate_group_per_epoch: 8
+  # Common source-comparison contract: no LLM-only persistent/group controls.
+  persistent: false
+  near_duplicate_group_weighting: false
+  max_repeat_per_near_duplicate_group: 0
+  max_cumulative_exposure_per_scenario: 0
+  max_cumulative_exposure_per_near_duplicate_group: 0

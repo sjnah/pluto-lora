@@ -3,7 +3,7 @@ label: Rule-based
 mode: bucketed
 filter_prefix: rule_percentile_ehu
 score_method: rule
-curriculum_method: legacy
+curriculum_method: score_bucket_curriculum_v1
 sampler_mode: exact_bucket_quota
 max_repeat_per_scenario: 4
 hard_subtype_balance: false

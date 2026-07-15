@@ -1,0 +1,28 @@
+method: llm
+label: LLM-guided capped weighted
+mode: bucketed
+filter_prefix: llm_percentile_ehu
+score_method: llm
+curriculum_method: llm_guided_v4
+sampler_mode: exposure_capped_weighted
+max_repeat_per_scenario: 4
+hard_subtype_balance: false
+tie_break_mode: stable_hash
+bucketization_mode: percentile_tercile
+phase_names:
+  a: easy_warmup
+  b: hard_ramp
+  c: hard_replay
+type_routing:
+  supported: true
+  default_mode: "off"
+  metadata_path: ../llm-taxonomy/artifacts/rationales_ssg_text_v4_0_train_normalized.csv
+  enabled_sampler_mode: exposure_capped_weighted
+exposure:
+  persistent: true
+  # The current type-on recipe applies inverse near-duplicate-group weighting.
+  # Keep it explicit so capped-off/on differ only in routing-specific behavior.
+  near_duplicate_group_weighting: true
+  max_repeat_per_near_duplicate_group: 8
+  max_cumulative_exposure_per_scenario_per_epoch: 4
+  max_cumulative_exposure_per_near_duplicate_group_per_epoch: 8

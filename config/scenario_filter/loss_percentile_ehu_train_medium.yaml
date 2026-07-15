@@ -1,6 +1,6 @@
 # LOSS Percentile Tercile Training Set (medium)
 # Exact percentile-tercile curriculum bucket. method=loss, seed=42, bucketization_mode=percentile_tercile
-# Total scenarios: 1020
+# Total scenarios: 1019
 
 '_target_': 'nuplan.planning.scenario_builder.scenario_filter.ScenarioFilter'
 '_convert_': 'all'
@@ -1025,7 +1025,6 @@
 - '554401e62fa15bb9'
 - 'e3a5fac80d4f5eea'
 - 'aa4d8fdb273d536d'
-- '7d72fe5a8c02526b'
 'log_names': null
 'map_names': null
 'num_scenarios_per_type': null

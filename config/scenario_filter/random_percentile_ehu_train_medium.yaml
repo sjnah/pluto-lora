@@ -1,6 +1,6 @@
 # RANDOM Percentile Tercile Training Set (medium)
 # Exact percentile-tercile curriculum bucket. method=random, seed=42, bucketization_mode=percentile_tercile
-# Total scenarios: 1020
+# Total scenarios: 1019
 
 '_target_': 'nuplan.planning.scenario_builder.scenario_filter.ScenarioFilter'
 '_convert_': 'all'
@@ -106,7 +106,6 @@
 - '5886fbc0e5c55973'
 - '07ba113f8b905102'
 - 'e7744f4d90355259'
-- '11450d849eed59aa'
 - 'bed49bc436b85d46'
 - 'd8a76df632cd5a10'
 - '8db89f8285765a59'

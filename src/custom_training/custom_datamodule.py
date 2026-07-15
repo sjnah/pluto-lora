@@ -36,6 +36,7 @@ from nuplan.planning.training.preprocessing.feature_preprocessor import (
 from nuplan.planning.utils.multithreading.worker_pool import WorkerPool
 
 from src.custom_training.curriculum_sampling import (
+    apply_near_duplicate_group_inverse_weighting,
     build_exact_bucket_quota_indices,
     build_exposure_capped_bucket_quota_indices,
     build_exposure_capped_weighted_indices,
@@ -692,7 +693,7 @@ def distributed_curriculum_sampler_init(
     score_method: str = "",
     filter_file_path: str = "",
     hard_subtype_balance: bool = False,
-    sampler_mode: str = "legacy_weighted",
+    sampler_mode: str = "exposure_capped_weighted",
     phase_name: str = "",
     phase_start_epoch: int = 0,
     curriculum_method: str = "",
@@ -700,6 +701,7 @@ def distributed_curriculum_sampler_init(
     demonstration_type_metadata_path: Optional[str] = None,
     demonstration_type_policy: Optional[Dict[str, Any]] = None,
     max_repeat_per_near_duplicate_group: int = 0,
+    near_duplicate_group_weighting: bool = False,
     cumulative_exposure_state_path: Optional[str] = None,
     max_cumulative_exposure_per_scenario: int = 0,
     max_cumulative_exposure_per_near_duplicate_group: int = 0,
@@ -730,22 +732,26 @@ def distributed_curriculum_sampler_init(
     )
     if type_mode == "enabled" and sampler_mode == "exact_bucket_quota":
         raise ValueError(
-            "Demonstration-type routing currently requires legacy_weighted so its "
+            "Demonstration-type routing currently requires exposure_capped_weighted so its "
             "stage-level expected exposure weights remain explicit"
         )
     
     split_names = split_names or [f"split_{idx}" for idx in range(len(scenario_datasets))]
 
-    sampler_mode = str(sampler_mode or "legacy_weighted")
-    if sampler_mode not in {"legacy_weighted", "exact_bucket_quota"}:
+    sampler_mode = str(sampler_mode or "exposure_capped_weighted")
+    if sampler_mode not in {
+        "exposure_capped_weighted",
+        "legacy_weighted",  # Compatibility alias for pre-refactor snapshots.
+        "exact_bucket_quota",
+    }:
         raise ValueError(f"Unsupported curriculum sampler_mode: {sampler_mode}")
     if (
         pacing_schedule
-        and sampler_mode == "legacy_weighted"
+        and sampler_mode in {"exposure_capped_weighted", "legacy_weighted"}
         and max_repeat_per_near_duplicate_group <= 0
     ):
         raise ValueError(
-            "legacy_weighted pacing requires the exposure-capped epoch-aware sampler"
+            "weighted pacing requires the exposure-capped epoch-aware sampler"
         )
 
     scenario_records: List[Dict[str, Any]] = []
@@ -828,17 +834,12 @@ def distributed_curriculum_sampler_init(
             record["demonstration_type"] = demo_type
             record["type_routing_eligible"] = eligible
 
-        group_sizes = Counter(
-            group
-            for record in scenario_records
-            for group in record["near_duplicate_groups"]
+    if type_mode == "enabled" or near_duplicate_group_weighting:
+        all_weights = apply_near_duplicate_group_inverse_weighting(
+            all_weights, scenario_records
         )
-        for index, record in enumerate(scenario_records):
-            all_weights[index] /= max(
-                1,
-                max(group_sizes[group] for group in record["near_duplicate_groups"]),
-            )
 
+    if type_mode == "enabled":
         absolute_caps = {
             "necessary_exception": float(preset.get("necessary_exception_absolute_cap", 1.0)),
             "expert_error": float(preset.get("expert_error_absolute_cap", 1.0)),
@@ -1029,7 +1030,7 @@ class CustomDataModule(pl.LightningDataModule):
         curriculum_score_method: str = "",
         curriculum_filter_file_path: str = "",
         hard_subtype_balance: bool = False,
-        curriculum_sampler_mode: str = "legacy_weighted",
+        curriculum_sampler_mode: str = "exposure_capped_weighted",
         curriculum_phase_name: str = "",
         curriculum_phase_start_epoch: int = 0,
         curriculum_method: str = "",
@@ -1037,6 +1038,7 @@ class CustomDataModule(pl.LightningDataModule):
         demonstration_type_metadata_path: Optional[str] = None,
         demonstration_type_policy: Optional[Dict[str, Any]] = None,
         curriculum_max_repeat_per_near_duplicate_group: int = 0,
+        curriculum_near_duplicate_group_weighting: bool = False,
         curriculum_cumulative_exposure_state_path: Optional[str] = None,
         curriculum_max_cumulative_exposure_per_scenario: int = 0,
         curriculum_max_cumulative_exposure_per_near_duplicate_group: int = 0,
@@ -1111,6 +1113,9 @@ class CustomDataModule(pl.LightningDataModule):
         self._demonstration_type_policy = demonstration_type_policy
         self._curriculum_max_repeat_per_near_duplicate_group = int(
             curriculum_max_repeat_per_near_duplicate_group
+        )
+        self._curriculum_near_duplicate_group_weighting = bool(
+            curriculum_near_duplicate_group_weighting
         )
         self._curriculum_cumulative_exposure_state_path = curriculum_cumulative_exposure_state_path
         self._curriculum_max_cumulative_exposure_per_scenario = int(
@@ -1246,7 +1251,7 @@ class CustomDataModule(pl.LightningDataModule):
                 score_method=self._curriculum_score_method,
                 filter_file_path=self._curriculum_filter_file_path,
                 hard_subtype_balance=bool(self._hard_subtype_balance),
-                sampler_mode=str(self._curriculum_sampler_mode or "legacy_weighted"),
+                sampler_mode=str(self._curriculum_sampler_mode or "exposure_capped_weighted"),
                 phase_name=str(self._curriculum_phase_name or ""),
                 phase_start_epoch=self._curriculum_phase_start_epoch,
                 curriculum_method=str(self._curriculum_method or ""),
@@ -1254,6 +1259,7 @@ class CustomDataModule(pl.LightningDataModule):
                 demonstration_type_metadata_path=self._demonstration_type_metadata_path,
                 demonstration_type_policy=self._demonstration_type_policy,
                 max_repeat_per_near_duplicate_group=self._curriculum_max_repeat_per_near_duplicate_group,
+                near_duplicate_group_weighting=self._curriculum_near_duplicate_group_weighting,
                 cumulative_exposure_state_path=self._curriculum_cumulative_exposure_state_path,
                 max_cumulative_exposure_per_scenario=self._curriculum_max_cumulative_exposure_per_scenario,
                 max_cumulative_exposure_per_near_duplicate_group=self._curriculum_max_cumulative_exposure_per_near_duplicate_group,

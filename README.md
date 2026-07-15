@@ -5,17 +5,38 @@
 This checkout includes local LoRA fine-tuning and benchmark tooling on top of
 the upstream PLUTO code.
 
-Use these root-level wrappers for the local workflow:
+The paper benchmark is configured from
+`config/benchmark/paper_main_v1.yaml`.  Edit its workflow mode, selected arms,
+seeds, benchmarks, and checkpoint policy, then run without arguments:
 
 ```bash
-bash train.sh           # LLM-percentile LoRA fine-tuning
-bash train.sh rulebased # rule-based difficulty comparison
-bash test.sh            # benchmark current checkpoints
-bash analyze.sh         # summarize benchmark metrics
+bash train.sh
 ```
 
-Detailed scripts live under `scripts/`; generated records and comparison media
-live under `artifacts/`; old one-off scripts are kept in `archive/`.
+`bash test.sh` is the evaluation-only alias for the same configuration and
+runner.
+
+The same runner supports optional one-run CLI overrides:
+
+```bash
+# Validate the complete resolved suite without training or simulation.
+bash train.sh --validate-only
+
+# Train only the common exact-quota comparison arms.
+bash train.sh --mode train_only --arms random_exact rule_exact loss_exact mpoc_exact llm_exact_off
+
+# Evaluate already-trained checkpoints only.
+bash test.sh --arms zero_shot uniform llm_capped_on
+```
+
+Use `checkpoint_overrides` in the benchmark YAML when an existing model cannot
+be discovered from its canonical experiment name.  Evaluation-only mode never
+starts training and fails before simulation if a required checkpoint is
+missing.  See `config/benchmark/README.md` for the arm and workflow contracts.
+
+Detailed scripts live under `scripts/`; resolved run manifests and comparison
+records live under `artifacts/`.  `bash analyze.sh` remains the local result
+summary entrypoint.
 
 More local experiment detail: `docs/research/pluto_experiment_guide.md`.
 

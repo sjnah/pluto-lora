@@ -223,28 +223,43 @@ class TestPersistentCurriculumExposureState(unittest.TestCase):
                 "hard_prior": [0.0, 0.0, 1.0],
             }
         )
-        sampler = ExposureCappedWeightedSampler(
-            weights=[1.0 / 9.0] * 9,
-            scenario_records=records,
-            num_samples=9,
-            max_repeat_per_scenario=4,
-            max_repeat_per_group=4,
-            random_seed=5,
-            cumulative_exposure_state_path=None,
-            max_cumulative_exposure_per_scenario=0,
-            max_cumulative_exposure_per_group=0,
-            phase_name="hard_ramp",
-            phase_start_epoch=2,
-            pacing_schedule=schedule,
-            split_names=split_names,
-            base_target_proportions=[1 / 3, 1 / 3, 1 / 3],
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "weighted_exposure.json"
+            log_path = Path(directory) / "weighted_sampling.json"
+            sampler = ExposureCappedWeightedSampler(
+                weights=[1.0 / 9.0] * 9,
+                scenario_records=records,
+                num_samples=9,
+                max_repeat_per_scenario=4,
+                max_repeat_per_group=8,
+                random_seed=5,
+                cumulative_exposure_state_path=str(state_path),
+                max_cumulative_exposure_per_scenario=48,
+                max_cumulative_exposure_per_group=96,
+                sampling_log_path=str(log_path),
+                phase_name="hard_ramp",
+                phase_start_epoch=2,
+                pacing_schedule=schedule,
+                split_names=split_names,
+                base_target_proportions=[1 / 3, 1 / 3, 1 / 3],
+            )
 
-        fingerprint = sampler._plan_fingerprint(2)
-        _, metadata = sampler._build_indices(5)
-        self.assertEqual(len(fingerprint), 64)
-        self.assertAlmostEqual(metadata["pacing"]["alpha"], 0.8)
-        self.assertIsInstance(metadata["pacing_schedule"]["hard_prior"], list)
+            fingerprint = sampler._plan_fingerprint(5)
+            sampler.set_epoch(5)
+            self.assertEqual(len(list(sampler)), 9)
+
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            metadata = state["plans"]["hard_ramp:5"]["metadata"]
+            persisted_log = json.loads(
+                (Path(directory) / "weighted_sampling.epoch_0005.rank_000.json")
+                .read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(fingerprint), 64)
+            self.assertAlmostEqual(metadata["pacing"]["alpha"], 0.8)
+            self.assertIsInstance(metadata["pacing_schedule"]["hard_prior"], list)
+            self.assertEqual(
+                persisted_log["pacing_schedule"], metadata["pacing_schedule"]
+            )
 
     def test_static_weighted_split_targets_are_applied_after_inner_weights(self):
         records = [

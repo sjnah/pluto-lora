@@ -224,6 +224,15 @@ find_lora_checkpoint() {
     local label=$2
     local experiment_name=$3
 
+    if [ -n "${PLUTO_EVAL_CHECKPOINT:-}" ]; then
+        if [ ! -f "$PLUTO_EVAL_CHECKPOINT" ]; then
+            echo "Error: explicit ${label} checkpoint not found: $PLUTO_EVAL_CHECKPOINT" >&2
+            exit 1
+        fi
+        printf -v "$result_var" '%s' "$PLUTO_EVAL_CHECKPOINT"
+        return 0
+    fi
+
     local exp_dir
     exp_dir=$(find outputs -type d -name "$experiment_name" 2>/dev/null | sort -r | head -n1)
 
@@ -334,6 +343,8 @@ run_enabled_interplan_models() {
 # Set up Python/runtime paths. Supports conda, .venv, or an already-active env.
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/env_bootstrap.sh"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/python_runtime.sh"
 
 # Directory to save scenario token records
 SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"
@@ -367,7 +378,7 @@ echo ""
 
 # Find checkpoints
 if is_enabled "$RUN_ZERO_SHOT"; then
-    ZERO_SHOT_CKPT="$(pwd)/checkpoints/pluto_1M_aux_cil.ckpt"
+    ZERO_SHOT_CKPT="${PLUTO_EVAL_CHECKPOINT:-$(pwd)/checkpoints/pluto_1M_aux_cil.ckpt}"
     if [ ! -f "$ZERO_SHOT_CKPT" ]; then
         echo "Error: Zero-shot checkpoint not found: $ZERO_SHOT_CKPT"
         exit 1
@@ -451,10 +462,14 @@ is_enabled "$RUN_LLM_CURRICULUM" && COLLECT_METHOD_KEYS+=("$LLM_CURRICULUM_SLUG"
 is_enabled "$RUN_MPOC" && COLLECT_METHOD_KEYS+=("$MPOC_CURRICULUM_SLUG")
 COLLECT_METHODS=$(IFS=,; echo "${COLLECT_METHOD_KEYS[*]}")
 
-python ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
+if is_enabled "${SKIP_RESULT_COLLECTION:-false}"; then
+    echo "Skipping result collection by request."
+else
+"$PYTHON_BIN" ${REPO_ROOT}/scripts/evaluation/collect_quick_test_results.py \
     --tests "$COLLECT_TEST" \
     --methods "$COLLECT_METHODS" \
     --detail || echo "Could not collect interPlan (${INTERPLAN_FILTER}) summary"
+fi
 
 echo ""
 echo "=============================================="

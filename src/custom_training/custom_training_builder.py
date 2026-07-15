@@ -243,7 +243,9 @@ def build_lightning_datamodule(
         curriculum_score_method=str(curriculum_cfg.get("score_method", "")),
         curriculum_filter_file_path=str(curriculum_cfg.get("filter_file_path", "")),
         hard_subtype_balance=bool(curriculum_cfg.get("hard_subtype_balance", False)),
-        curriculum_sampler_mode=str(curriculum_cfg.get("sampler_mode", "legacy_weighted")),
+        curriculum_sampler_mode=str(
+            curriculum_cfg.get("sampler_mode", "exposure_capped_weighted")
+        ),
         curriculum_phase_name=str(curriculum_cfg.get("phase_name", "")),
         curriculum_phase_start_epoch=int(curriculum_cfg.get("phase_start_epoch", 0)),
         curriculum_method=str(curriculum_cfg.get("method", "")),
@@ -252,6 +254,9 @@ def build_lightning_datamodule(
         demonstration_type_policy=curriculum_cfg.get("demonstration_type_policy", None),
         curriculum_max_repeat_per_near_duplicate_group=int(
             curriculum_cfg.get("max_repeat_per_near_duplicate_group", 0)
+        ),
+        curriculum_near_duplicate_group_weighting=bool(
+            curriculum_cfg.get("near_duplicate_group_weighting", False)
         ),
         curriculum_cumulative_exposure_state_path=curriculum_cfg.get(
             "cumulative_exposure_state_path", None

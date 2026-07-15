@@ -10,7 +10,7 @@ hydra:
   searchpath:
     - pkg://nuplan.planning.script.config.common
     - pkg://nuplan.planning.script.config.training
-    - file:///home/sjnah/Workspace/development/scene-intrinsic-difficulty/pluto/config
+    - file://${oc.env:PLUTO_CONFIG_ROOT,./config}
 
 defaults:
   - /training_protocol: flat_area_matched_v1
@@ -103,27 +103,15 @@ model:
     weight_auxiliary: 1.0          # Global multiplier for auxiliary losses (prediction, collision, contrastive)
                                    # This is a convenient way to scale all auxiliary losses together
 
-# Data configuration (semantic placeholders)
-# Actual split names will be substituted by the user
-data_splits:
-  uniform_train: ["UNIFORM_TRAIN_SPLIT_PLACEHOLDER"]
-  uniform_val: ["UNIFORM_VAL_SPLIT_PLACEHOLDER"]
-  
-  curriculum_stage1: ["CURRICULUM_STAGE1_SPLIT"]
-  curriculum_stage2: ["CURRICULUM_STAGE2_SPLIT"]
-  curriculum_stage3: ["CURRICULUM_STAGE3_SPLIT"]
-  
-  curriculum_val: ["CURRICULUM_VAL_SPLIT"]
-
 # Curriculum fine-tuning configuration
 curriculum:
   # SSG/judge v4 demonstration types are observe-only until a human precision
   # audit enables routing. The sampler rejects enabled routing for non-LLM-v4 methods.
-  method: ${oc.env:CURRICULUM_METHOD,legacy}
-  demonstration_type_mode: ${oc.env:DEMONSTRATION_TYPE_MODE,observe_only}
-  demonstration_type_metadata_path: ${oc.env:DEMONSTRATION_TYPE_METADATA_PATH,null}
+  method: score_bucket_curriculum_v1
+  demonstration_type_mode: observe_only
+  demonstration_type_metadata_path: null
   demonstration_type_policy:
-    stage_role: ${oc.env:CURRICULUM_STAGE_ROLE,all_consolidation}
+    stage_role: all_consolidation
     stage_presets:
       easy_oriented:
         necessary_exception_multiplier: 1.0
@@ -146,31 +134,22 @@ curriculum:
         expert_error_absolute_cap: 0.01
         uncertain_multiplier: 0.5
         uncertain_absolute_cap: 0.05
-  # Total steps in uniform FT (for alignment)
-  uniform_total_steps: 10000
-
-  # Method-independent semantic-priority curriculum controls.
+  # Runtime schema defaults. The selected method-arm config and canonical
+  # runner provide experiment-specific values explicitly.
   score_method: llm
-  bucket_split_rule: quantile_40_40_20
-  bucketization_mode: raw_macro
+  bucket_split_rule: quantile_33_33_33
+  bucketization_mode: percentile_tercile
   percentile_split_seed: 42
   tie_break_mode: stable_hash
-  sampler_mode: legacy_weighted
+  sampler_mode: exact_bucket_quota
   phase_name: ""
   pacing_schedule: null
-  # New percentile_ehu experiments use:
-  # easy warm-up -> mild hard focus -> uniform consolidation.
-  # This is not a direct Rampp reproduction; it combines easy-to-hard
-  # curriculum, mild hard-example emphasis, and final uniform consolidation.
-  stage_mixing_ratio:
-    stage1: [0.75, 0.20, 0.05]
-    stage2: [0.45, 0.40, 0.15]
-    stage3: [0.25, 0.35, 0.40]
   replacement: true
   max_repeat_per_scenario: 4
   # Disabled in the generic config. The LLM-v4 runner enables these only for
   # its own experiment after a pool-capacity preflight.
   max_repeat_per_near_duplicate_group: 0
+  near_duplicate_group_weighting: false
   cumulative_exposure_state_path: null
   max_cumulative_exposure_per_scenario: 0
   max_cumulative_exposure_per_near_duplicate_group: 0
@@ -179,37 +158,6 @@ curriculum:
   random_seed: ${seed}
   sampling_log_path: null
   filter_file_path: null
-  
-  # Legacy in-process CurriculumController option. The canonical multi-process
-  # LoRA runner does not read this field; reset boundaries live in the selected
-  # training_protocol YAML and are passed through lora.reset_optimizer_moments_on_resume.
-  reset_optimizer_each_stage: false
-  
-  # Stage configurations
-  stages:
-    stage1:
-      splits:
-        - ${data_splits.curriculum_stage1}
-        - ${data_splits.curriculum_stage2}
-        - ${data_splits.curriculum_stage3}
-      epochs: 5
-      sampling_weights: ${curriculum.stage_mixing_ratio.stage1}
-    
-    stage2:
-      splits: 
-        - ${data_splits.curriculum_stage1}
-        - ${data_splits.curriculum_stage2}
-        - ${data_splits.curriculum_stage3}
-      epochs: 5
-      sampling_weights: ${curriculum.stage_mixing_ratio.stage2}
-    
-    stage3:
-      splits:
-        - ${data_splits.curriculum_stage1}
-        - ${data_splits.curriculum_stage2}
-        - ${data_splits.curriculum_stage3}
-      epochs: 5
-      sampling_weights: ${curriculum.stage_mixing_ratio.stage3}
 
 # Pretrained checkpoint
 pretrained_ckpt: checkpoints/pluto_1M_aux_cil.ckpt

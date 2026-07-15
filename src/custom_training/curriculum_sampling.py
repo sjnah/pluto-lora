@@ -32,6 +32,26 @@ def validate_demonstration_type_routing(mode: str, curriculum_method: str) -> st
     return normalized
 
 
+def apply_near_duplicate_group_inverse_weighting(
+    weights: Sequence[float], scenario_records: Sequence[Mapping[str, object]]
+) -> List[float]:
+    """Downweight scenes belonging to densely repeated temporal groups."""
+    if len(weights) != len(scenario_records):
+        raise ValueError("near-duplicate group weighting metadata must align with weights")
+    group_sizes = Counter(
+        str(group)
+        for record in scenario_records
+        for group in record["near_duplicate_groups"]  # type: ignore[index]
+    )
+    result: List[float] = []
+    for weight, record in zip(weights, scenario_records):
+        groups = [str(group) for group in record["near_duplicate_groups"]]  # type: ignore[index]
+        if not groups:
+            raise ValueError("near-duplicate group weighting requires non-empty groups")
+        result.append(float(weight) / max(1, max(group_sizes[group] for group in groups)))
+    return result
+
+
 def stable_hash_fraction(value: str, seed: int = 0) -> float:
     """Return a deterministic [0, 1) fraction for tie-breaking."""
     digest = hashlib.sha1(f"{seed}:{value}".encode("utf-8")).hexdigest()[:16]
