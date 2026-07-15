@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytorch_lightning as pl
 import torch
 import torch.utils.data
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from torch.utils.data.sampler import WeightedRandomSampler
 
 from nuplan.planning.scenario_builder.abstract_scenario import AbstractScenario
@@ -46,6 +46,17 @@ from src.custom_training.curriculum_sampling import (
 logger = logging.getLogger(__name__)
 
 DataModuleNotSetupError = RuntimeError('Data module has not been setup, call "setup()"')
+
+
+def _plain_config(value: Any) -> Any:
+    """Recursively detach Hydra/OmegaConf containers from runtime state."""
+    if isinstance(value, (DictConfig, ListConfig)):
+        return OmegaConf.to_container(value, resolve=True)
+    if isinstance(value, dict):
+        return {str(key): _plain_config(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_config(item) for item in value]
+    return value
 
 
 class FixedIndexSampler(torch.utils.data.Sampler[int]):
@@ -100,7 +111,7 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         self._max_cumulative_exposure_per_group = int(max_cumulative_exposure_per_group)
         self._batch_size = max(1, int(batch_size))
         self._accumulate_grad_batches = max(1, int(accumulate_grad_batches))
-        self._pacing_schedule = dict(pacing_schedule or {})
+        self._pacing_schedule = dict(_plain_config(pacing_schedule or {}))
         self._epoch: Optional[int] = None
 
     def set_epoch(self, epoch: int) -> None:
@@ -1111,7 +1122,9 @@ class CustomDataModule(pl.LightningDataModule):
         self._curriculum_accumulate_grad_batches = max(
             1, int(curriculum_accumulate_grad_batches)
         )
-        self._curriculum_pacing_schedule = dict(curriculum_pacing_schedule or {})
+        self._curriculum_pacing_schedule = dict(
+            _plain_config(curriculum_pacing_schedule or {})
+        )
 
     @property
     def feature_and_targets_builder(self) -> FeaturePreprocessor:

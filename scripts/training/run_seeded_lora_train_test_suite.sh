@@ -11,10 +11,13 @@ EVAL_SUITE="${REPO_ROOT}/scripts/evaluation/run_quick_test_suite.sh"
 CONFIG_RESOLVER="${SCRIPT_DIR}/resolve_lora_experiment_config.py"
 cd "$REPO_ROOT"
 
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/python_runtime.sh"
+
 EXPERIMENT_SUITE_CONFIG="${EXPERIMENT_SUITE_CONFIG:-${REPO_ROOT}/config/experiment_suite/flat_lr_comparison_v1.yaml}"
-eval "$(python3 "$CONFIG_RESOLVER" --suite "$EXPERIMENT_SUITE_CONFIG" --format shell)"
+eval "$("$PYTHON_BIN" "$CONFIG_RESOLVER" --suite "$EXPERIMENT_SUITE_CONFIG" --format shell)"
 TRAINING_PROTOCOL_CONFIG="${TRAINING_PROTOCOL_CONFIG:-$CFG_SUITE_TRAINING_PROTOCOL}"
-eval "$(python3 "$CONFIG_RESOLVER" \
+eval "$("$PYTHON_BIN" "$CONFIG_RESOLVER" \
     --protocol "$TRAINING_PROTOCOL_CONFIG" \
     --method "${REPO_ROOT}/config/curriculum_method/llm.yaml" \
     --format shell)"
@@ -95,7 +98,7 @@ find_checkpoint_for_experiment() {
             config_seed="$(sed -n 's/^seed:[[:space:]]*//p' "$config_file" 2>/dev/null | head -n1)"
             [ "$config_seed" = "$required_seed" ] || continue
         fi
-        protocol_identity="$(python3 - "$config_file" <<'PY' 2>/dev/null || true
+        protocol_identity="$("$PYTHON_BIN" - "$config_file" <<'PY' 2>/dev/null || true
 import sys
 from pathlib import Path
 

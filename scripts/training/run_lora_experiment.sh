@@ -11,11 +11,14 @@ WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 PLUTO_FILTER_DIR="${REPO_ROOT}/config/scenario_filter"
 CONFIG_RESOLVER="${SCRIPT_DIR}/resolve_lora_experiment_config.py"
 
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/python_runtime.sh"
+
 METHOD="${METHOD:-llm}"
 TRAINING_PROTOCOL_CONFIG="${TRAINING_PROTOCOL_CONFIG:-${REPO_ROOT}/config/training_protocol/flat_area_matched_v1.yaml}"
 METHOD_CONFIG="${METHOD_CONFIG:-${REPO_ROOT}/config/curriculum_method/${METHOD}.yaml}"
 
-eval "$(python3 "$CONFIG_RESOLVER" \
+eval "$("$PYTHON_BIN" "$CONFIG_RESOLVER" \
     --protocol "$TRAINING_PROTOCOL_CONFIG" \
     --method "$METHOD_CONFIG" \
     --format shell)"
@@ -321,7 +324,7 @@ run_lora_train() {
     fi
 
     local cmd=(
-        python scripts/training/finetune_pluto.py
+        "$PYTHON_BIN" scripts/training/finetune_pluto.py
         --config-name training/train_pluto_lora \
         "experiment=$experiment_name"
         "$checkpoint_arg=$checkpoint_path"
@@ -452,7 +455,7 @@ main() {
         freeze_type_routing_metadata
     fi
     if ! is_enabled "$DRY_RUN"; then
-        python "$CONFIG_RESOLVER" \
+        "$PYTHON_BIN" "$CONFIG_RESOLVER" \
             --protocol "$TRAINING_PROTOCOL_CONFIG" \
             --method "$METHOD_CONFIG" \
             --format json \

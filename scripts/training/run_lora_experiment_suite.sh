@@ -15,9 +15,12 @@ LORA_EXPERIMENT_SCRIPT="${SCRIPT_DIR}/run_lora_experiment.sh"
 CONFIG_RESOLVER="${SCRIPT_DIR}/resolve_lora_experiment_config.py"
 EXPERIMENT_SUITE_CONFIG="${EXPERIMENT_SUITE_CONFIG:-${REPO_ROOT}/config/experiment_suite/flat_lr_comparison_v1.yaml}"
 
-eval "$(python3 "$CONFIG_RESOLVER" --suite "$EXPERIMENT_SUITE_CONFIG" --format shell)"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/python_runtime.sh"
+
+eval "$("$PYTHON_BIN" "$CONFIG_RESOLVER" --suite "$EXPERIMENT_SUITE_CONFIG" --format shell)"
 TRAINING_PROTOCOL_CONFIG="${TRAINING_PROTOCOL_CONFIG:-$CFG_SUITE_TRAINING_PROTOCOL}"
-eval "$(python3 "$CONFIG_RESOLVER" \
+eval "$("$PYTHON_BIN" "$CONFIG_RESOLVER" \
     --protocol "$TRAINING_PROTOCOL_CONFIG" \
     --method "${REPO_ROOT}/config/curriculum_method/llm.yaml" \
     --format shell)"

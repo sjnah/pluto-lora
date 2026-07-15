@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from omegaconf import OmegaConf
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -199,6 +201,50 @@ class TestPersistentCurriculumExposureState(unittest.TestCase):
             end_metadata["sampled_split_counts"]["hard"],
             start_metadata["sampled_split_counts"]["hard"],
         )
+
+    def test_weighted_pacing_fingerprint_accepts_nested_omegaconf_lists(self):
+        split_names = ["easy", "medium", "hard"]
+        records = [
+            {
+                "scenario_id": f"scene_{index}",
+                "near_duplicate_groups": [f"group_{index}"],
+                "split": split_names[index // 3],
+                "log_name": f"log_{index}",
+            }
+            for index in range(9)
+        ]
+        schedule = OmegaConf.create(
+            {
+                "type": "hard_replay_ramp",
+                "alpha_start": 0.0,
+                "alpha_end": 0.8,
+                "ramp_epochs": 4,
+                "uniform_prior": [1 / 3, 1 / 3, 1 / 3],
+                "hard_prior": [0.0, 0.0, 1.0],
+            }
+        )
+        sampler = ExposureCappedWeightedSampler(
+            weights=[1.0 / 9.0] * 9,
+            scenario_records=records,
+            num_samples=9,
+            max_repeat_per_scenario=4,
+            max_repeat_per_group=4,
+            random_seed=5,
+            cumulative_exposure_state_path=None,
+            max_cumulative_exposure_per_scenario=0,
+            max_cumulative_exposure_per_group=0,
+            phase_name="hard_ramp",
+            phase_start_epoch=2,
+            pacing_schedule=schedule,
+            split_names=split_names,
+            base_target_proportions=[1 / 3, 1 / 3, 1 / 3],
+        )
+
+        fingerprint = sampler._plan_fingerprint(2)
+        _, metadata = sampler._build_indices(5)
+        self.assertEqual(len(fingerprint), 64)
+        self.assertAlmostEqual(metadata["pacing"]["alpha"], 0.8)
+        self.assertIsInstance(metadata["pacing_schedule"]["hard_prior"], list)
 
     def test_static_weighted_split_targets_are_applied_after_inner_weights(self):
         records = [
