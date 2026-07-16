@@ -73,6 +73,14 @@ class MethodSpec:
     label: str
 
 
+@dataclass(frozen=True)
+class ParsedMethodLabel:
+    family: str
+    version: str | None
+    variant: str | None
+    seed: int | None
+
+
 TEST_SPECS = {
     "val14_benchmark": TestSpec("val14_benchmark", "Val14 benchmark", "val14_benchmark", "nuplan", 50),
     "val14_fast": TestSpec("val14_fast", "Val14 fast", "val14_fast", "nuplan", 270),
@@ -142,13 +150,13 @@ TEST_ALIASES = {
 
 METHOD_SPECS = {
     "zeroshot": MethodSpec("zeroshot", "Zero-shot"),
-    "rulebased": MethodSpec("rulebased", "Rule-based"),
-    "lossbased": MethodSpec("lossbased", "Loss-based"),
-    "curriculum_uniform": MethodSpec("curriculum_uniform", "Curriculum uniform"),
-    "curriculum_randombucket": MethodSpec("curriculum_randombucket", "RandomBucket"),
-    "curriculum_llm_guided_v2": MethodSpec("curriculum_llm_guided_v2", "Curriculum LLM-guided v2"),
-    "curriculum_llmbased": MethodSpec("curriculum_llmbased", "Curriculum LLM-based (legacy)"),
-    "curriculum_mpoc": MethodSpec("curriculum_mpoc", "Curriculum MPOC"),
+    "rulebased": MethodSpec("rulebased", "rule"),
+    "lossbased": MethodSpec("lossbased", "loss"),
+    "curriculum_uniform": MethodSpec("curriculum_uniform", "uniform"),
+    "curriculum_randombucket": MethodSpec("curriculum_randombucket", "random"),
+    "curriculum_llm_guided_v2": MethodSpec("curriculum_llm_guided_v2", "llm v2"),
+    "curriculum_llmbased": MethodSpec("curriculum_llmbased", "llm legacy"),
+    "curriculum_mpoc": MethodSpec("curriculum_mpoc", "mpoc"),
 }
 
 DEFAULT_METHODS = [
@@ -204,39 +212,117 @@ def parse_csv_arg(value: str) -> list[str]:
 def llm_guided_label(method_key: str) -> str:
     prefix = "curriculum_llm_guided_"
     version = method_key[len(prefix):] if method_key.startswith(prefix) else method_key
-    return f"Curriculum LLM-guided {version}"
+    return f"llm {version}"
 
 
 def uniform_label(method_key: str) -> str:
     prefix = "curriculum_uniform_"
     version = method_key[len(prefix):] if method_key.startswith(prefix) else method_key
-    return f"Uniform FT {version}"
+    return f"uniform {version}"
+
+
+def split_version_payload(payload: str) -> tuple[str, str | None]:
+    match = re.fullmatch(r"(?P<version>v[0-9][A-Za-z0-9.-]*)(?:_(?P<rest>.*))?", payload)
+    if match is None:
+        return payload, None
+    return match.group("version"), match.group("rest")
+
+
+def compact_variant(rest: str | None) -> str | None:
+    if not rest:
+        return None
+    parts = rest.split("_")
+    joined = "_".join(parts)
+    marker_labels = {
+        "exact_off": "exact",
+        "type_off": "capped_off",
+        "type_on": "capped_on",
+    }
+    for marker, label in marker_labels.items():
+        if marker in joined:
+            return label
+    phase_match = re.search(r"(phase[A-Za-z0-9]+(?:_(?:ema|standard))?)", joined)
+    if phase_match:
+        return phase_match.group(1)
+    return None
+
+
+def parse_method_label(method_key: str) -> ParsedMethodLabel | None:
+    if method_key == "zeroshot":
+        return ParsedMethodLabel("zero-shot", None, None, None)
+
+    seed = None
+    base_key = method_key
+    seed_match = SEED_SUFFIX_RE.fullmatch(method_key)
+    if seed_match is not None:
+        base_key = seed_match.group("base")
+        seed = int(seed_match.group("seed"))
+
+    direct_labels = {
+        "rulebased": "rule",
+        "lossbased": "loss",
+        "curriculum_uniform": "uniform",
+        "curriculum_randombucket": "random",
+        "curriculum_llmbased": "llm",
+        "curriculum_mpoc": "mpoc",
+    }
+    if base_key in direct_labels:
+        variant = "legacy" if base_key == "curriculum_llmbased" else None
+        return ParsedMethodLabel(direct_labels[base_key], None, variant, seed)
+
+    patterns = [
+        (r"curriculum_uniform_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "uniform"),
+        (r"uniform_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "uniform"),
+        (r"curriculum_llm_guided_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "llm"),
+        (r"llm_guided_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "llm"),
+        (
+            r"curriculum_(?P<family>rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_(?P<payload>v[0-9][A-Za-z0-9._-]*)",
+            None,
+        ),
+        (
+            r"(?P<family>rule|loss|random|mpoc)_(?P<payload>v[0-9][A-Za-z0-9._-]*)",
+            None,
+        ),
+    ]
+    family_labels = {
+        "rule": "rule",
+        "loss": "loss",
+        "randombucket": "random",
+        "random": "random",
+        "mpoc": "mpoc",
+        "llm": "llm",
+    }
+    for pattern, fixed_family in patterns:
+        match = re.fullmatch(pattern, base_key)
+        if match is None:
+            continue
+        family = fixed_family or family_labels[match.group("family")]
+        version, rest = split_version_payload(match.group("payload"))
+        return ParsedMethodLabel(family, version, compact_variant(rest), seed)
+    return None
+
+
+def short_method_label(method_key: str) -> str | None:
+    parsed = parse_method_label(method_key)
+    if parsed is None:
+        return None
+    family = parsed.family
+    variant = parsed.variant
+    if parsed.family == "llm" and parsed.variant in {"exact", "capped_off", "capped_on"}:
+        family = f"llm_{parsed.variant}"
+        variant = None
+    parts = [family]
+    if parsed.version:
+        parts.append(parsed.version)
+    if variant:
+        parts.append(variant)
+    if parsed.seed is not None:
+        parts.append(f"seed{parsed.seed}")
+    return " ".join(parts)
 
 
 def percentile_ehu_label(method_key: str) -> str:
-    match = re.fullmatch(
-        r"curriculum_(rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_(v[0-9][A-Za-z0-9._-]*)",
-        method_key,
-    )
-    if match is None:
-        return method_key
-    method, version = match.groups()
-    variant_label = ""
-    if version.endswith("_type_off"):
-        version = version[: -len("_type_off")]
-        variant_label = " (type routing off)"
-    elif version.endswith("_type_on"):
-        version = version[: -len("_type_on")]
-        variant_label = " (type routing on)"
-    labels = {
-        "rule": "Rule-based percentile-EHU",
-        "loss": "Loss-based percentile-EHU",
-        "randombucket": "RandomBucket percentile-EHU",
-        "random": "RandomBucket percentile-EHU",
-        "mpoc": "MPOC percentile-EHU",
-        "llm": "LLM-guided percentile-EHU",
-    }
-    return f"{labels[method]} {version}{variant_label}"
+    return short_method_label(method_key) or method_key
 
 
 def is_llm_guided_version_method(method_key: str) -> bool:
@@ -262,7 +348,12 @@ def is_auto_discovered_version_method(method_key: str) -> bool:
         is_llm_guided_version_method(method_key)
         or is_uniform_version_method(method_key)
         or is_percentile_ehu_version_method(method_key)
+        or is_benchmark_slug_method(method_key)
     )
+
+
+def is_benchmark_slug_method(method_key: str) -> bool:
+    return parse_method_label(method_key) is not None
 
 
 def method_sort_key(method_key: str) -> tuple[int, int, str]:
@@ -274,12 +365,35 @@ def method_sort_key(method_key: str) -> tuple[int, int, str]:
         "rulebased": (3, 0),
         "lossbased": (4, 0),
         "curriculum_mpoc": (5, 0),
-        "curriculum_llm_guided_v2": (6, 0),
-        "curriculum_llmbased": (6, 2),
+        "curriculum_llm_guided_v2": (6, 9),
+        "curriculum_llmbased": (6, 10),
     }
     if method_key in exact_order:
         group, variant = exact_order[method_key]
         return group, variant, method_key
+    parsed = parse_method_label(method_key)
+    if parsed is not None:
+        family_order = {
+            "zero-shot": 0,
+            "uniform": 1,
+            "random": 2,
+            "rule": 3,
+            "loss": 4,
+            "mpoc": 5,
+            "llm": 6,
+        }
+        llm_variant_order = {
+            "exact": 0,
+            "capped_off": 1,
+            "capped_on": 2,
+            None: 9,
+        }
+        variant = (
+            llm_variant_order.get(parsed.variant, 8)
+            if parsed.family == "llm"
+            else 1
+        )
+        return family_order.get(parsed.family, 99), variant, method_key
     if is_uniform_version_method(method_key):
         return 1, 1, method_key
     if "randombucket" in method_key or "_random_" in method_key:
@@ -291,7 +405,7 @@ def method_sort_key(method_key: str) -> tuple[int, int, str]:
     if "mpoc" in method_key:
         return 5, 1, method_key
     if is_llm_guided_version_method(method_key) or "llm" in method_key:
-        return 6, 1, method_key
+        return 6, 9, method_key
     return 99, 0, method_key
 
 
@@ -299,6 +413,9 @@ def method_spec_for_key(method_key: str) -> MethodSpec | None:
     spec = METHOD_SPECS.get(method_key)
     if spec is not None:
         return spec
+    short_label = short_method_label(method_key)
+    if short_label is not None:
+        return MethodSpec(method_key, short_label)
     if is_llm_guided_version_method(method_key):
         return MethodSpec(method_key, llm_guided_label(method_key))
     if is_uniform_version_method(method_key):
@@ -1067,7 +1184,8 @@ def main() -> int:
         help=(
             "Comma-separated methods or all. Methods: zeroshot, rulebased, lossbased, "
             "curriculum_uniform, curriculum_randombucket, curriculum_llm_guided_v2, "
-            "curriculum_uniform_v*, curriculum_llm_guided_v*, curriculum_llmbased, "
+            "curriculum_uniform_v*, curriculum_llm_guided_v*, uniform_v*, "
+            "llm_guided_v*, rule_v*, loss_v*, random_v*, mpoc_v*, curriculum_llmbased, "
             "curriculum_mpoc, curriculum_{rule,loss,randombucket,mpoc,llm}_percentile_ehu_v*. "
             "Versioned Uniform/LLM-guided/percentile-EHU methods present in result "
             "directories are auto-discovered for all."

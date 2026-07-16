@@ -25,8 +25,69 @@ class TestTypeRoutingMethodVariants(unittest.TestCase):
         self.assertIsNotNone(off_spec)
         self.assertIsNotNone(on_spec)
         self.assertNotEqual(off_spec.key, on_spec.key)
-        self.assertIn("type routing off", off_spec.label)
-        self.assertIn("type routing on", on_spec.label)
+        self.assertEqual(off_spec.label, "llm_capped_off v5.0.4.0.13")
+        self.assertEqual(on_spec.label, "llm_capped_on v5.0.4.0.13")
+
+    def test_yaml_first_benchmark_slugs_are_supported_with_compact_labels(self):
+        cases = {
+            "llm_guided_v5.0.4.0.19_flat_area_matched_v1_exact_off_seed5": (
+                "llm_exact v5.0.4.0.19 seed5"
+            ),
+            "uniform_v1.19_flat_area_matched_v1_seed5": "uniform v1.19 seed5",
+            "random_v1.19_flat_area_matched_v1_seed5": "random v1.19 seed5",
+            "rule_v3.19_flat_area_matched_v1_seed5": "rule v3.19 seed5",
+            "loss_v1.19_flat_area_matched_v1_seed5": "loss v1.19 seed5",
+            "mpoc_v1.19_flat_area_matched_v1_seed5": "mpoc v1.19 seed5",
+        }
+        for method_key, expected_label in cases.items():
+            with self.subTest(method_key=method_key):
+                spec = collector.method_spec_for_key(method_key)
+                self.assertIsNotNone(spec)
+                self.assertEqual(spec.label, expected_label)
+
+    def test_method_sort_order_is_fixed_for_paper_benchmark(self):
+        unordered = (
+            "llm_guided_v5.0.4.0.19_flat_area_matched_v1_type_on_seed5,"
+            "loss_v1.19_flat_area_matched_v1_seed5,"
+            "zeroshot,"
+            "rule_v3.19_flat_area_matched_v1_seed5,"
+            "uniform_v1.19_flat_area_matched_v1_seed5,"
+            "llm_guided_v5.0.4.0.19_flat_area_matched_v1_exact_off_seed5,"
+            "random_v1.19_flat_area_matched_v1_seed5,"
+            "mpoc_v1.19_flat_area_matched_v1_seed5,"
+            "llm_guided_v5.0.4.0.19_flat_area_matched_v1_type_off_seed5"
+        )
+        methods = collector.expand_methods(
+            unordered,
+            [collector.TEST_SPECS["test14_hard_fast"]],
+            collector.DEFAULT_EXP_ROOT,
+            collector.DEFAULT_RECORDS_DIR,
+            collector.DEFAULT_MANIFEST_DIR,
+        )
+        self.assertEqual(
+            [method.label for method in methods],
+            [
+                "Zero-shot",
+                "uniform v1.19 seed5",
+                "random v1.19 seed5",
+                "rule v3.19 seed5",
+                "loss v1.19 seed5",
+                "mpoc v1.19 seed5",
+                "llm_exact v5.0.4.0.19 seed5",
+                "llm_capped_off v5.0.4.0.19 seed5",
+                "llm_capped_on v5.0.4.0.19 seed5",
+            ],
+        )
+
+    def test_yaml_first_benchmark_slug_uses_the_slug_as_experiment_key(self):
+        test = collector.TEST_SPECS["test14_hard_fast"]
+        method = collector.method_spec_for_key(
+            "llm_guided_v5.0.4.0.19_flat_area_matched_v1_exact_off_seed5"
+        )
+        self.assertEqual(
+            collector.experiment_name(test, method),
+            "quick_test_llm_guided_v5.0.4.0.19_flat_area_matched_v1_exact_off_seed5_test14_hard_fast",
+        )
 
 
 class TestSeedAggregation(unittest.TestCase):

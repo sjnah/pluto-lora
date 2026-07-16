@@ -183,6 +183,7 @@ def apply_cli_overrides(payload: dict[str, Any], args: argparse.Namespace) -> di
     workflow = require_mapping(resolved, "workflow")
     selection = require_mapping(resolved, "selection")
     training = require_mapping(resolved, "training")
+    evaluation = require_mapping(resolved, "evaluation")
     if args.mode:
         workflow["mode"] = args.mode
     if args.arms:
@@ -195,6 +196,10 @@ def apply_cli_overrides(payload: dict[str, Any], args: argparse.Namespace) -> di
         training["existing_checkpoint"] = args.checkpoint_policy
     if args.dry_run is not None:
         workflow["dry_run"] = args.dry_run
+    if args.skip_completed_evaluation is not None:
+        evaluation["skip_completed_same_version_seed"] = (
+            args.skip_completed_evaluation
+        )
     return resolved
 
 
@@ -314,8 +319,7 @@ def validate_arm(
     )
 
 
-def scenario_filter_tokens(filter_name: str) -> list[str]:
-    path = PLUTO_ROOT / "config/scenario_filter" / f"{filter_name}.yaml"
+def scenario_filter_tokens_from_path(path: Path) -> list[str]:
     if not path.is_file():
         raise ConfigError(f"Scenario filter does not exist: {path}")
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -328,6 +332,11 @@ def scenario_filter_tokens(filter_name: str) -> list[str]:
     if len(normalized) != len(set(normalized)):
         raise ConfigError(f"Scenario filter contains duplicate tokens: {path}")
     return normalized
+
+
+def scenario_filter_tokens(filter_name: str) -> list[str]:
+    path = PLUTO_ROOT / "config/scenario_filter" / f"{filter_name}.yaml"
+    return scenario_filter_tokens_from_path(path)
 
 
 def exact_sampler_capacity_preflight(
@@ -499,6 +508,23 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError(f"Selected arm is missing or not a mapping: {arm_id}")
         resolved_arms[arm_id] = validate_arm(arm_id, raw, protocol_path)
 
+    skip_completed_evaluation = bool(
+        evaluation.get("skip_completed_same_version_seed", False)
+    )
+    if skip_completed_evaluation:
+        for arm_id, arm in resolved_arms.items():
+            if arm.kind != "trainable":
+                continue
+            if (
+                "{artifact_version}" not in arm.slug_template
+                or "{seed}" not in arm.slug_template
+            ):
+                raise ConfigError(
+                    "evaluation.skip_completed_same_version_seed requires "
+                    f"arms.{arm_id}.evaluation_slug_template to contain "
+                    "{artifact_version} and {seed}"
+                )
+
     filter_contracts = validate_filter_contracts(
         resolved_arms, selected_arms, protocol_payload
     )
@@ -539,6 +565,7 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
         "require_completed_checkpoint": bool(
             evaluation.get("require_completed_checkpoint", True)
         ),
+        "skip_completed_same_version_seed": skip_completed_evaluation,
         "disable_simulation_log": bool(evaluation.get("disable_simulation_log", True)),
         "collect_results": bool(evaluation.get("collect_results", True)),
         "checkpoint_overrides": overrides,
@@ -933,6 +960,77 @@ def benchmark_command(benchmark: str) -> tuple[list[str], dict[str, str]]:
     raise AssertionError(benchmark)
 
 
+def evaluation_experiment_name(run: dict[str, Any], benchmark: str) -> str:
+    suffixes = {
+        "val14": "val14",
+        "val14-fast": "val14_fast",
+        "test14-hard": "test14_hard",
+        "test14-hard-fast": "test14_hard_fast",
+        "interplan10": "interplan10",
+        "interplan-benchmark": "interplan_benchmark",
+    }
+    prefix = (
+        "quick_test_interplan_" if benchmark.startswith("interplan") else "quick_test_"
+    )
+    return f"{prefix}{run['evaluation_slug']}_{suffixes[benchmark]}"
+
+
+def evaluation_filter_path(benchmark: str) -> Path:
+    names = {
+        "val14": "val14",
+        "val14-fast": "val14-fast",
+        "test14-hard": "test14-hard",
+        "test14-hard-fast": "test14-hard-fast",
+    }
+    if benchmark in names:
+        return PLUTO_ROOT / "config/scenario_filter" / f"{names[benchmark]}.yaml"
+    interplan_name = (
+        "interplan10" if benchmark == "interplan10" else "benchmark_scenarios"
+    )
+    return (
+        PLUTO_ROOT.parent
+        / "interPlan/interplan/planning/script/config/common/scenario_filter"
+        / f"{interplan_name}.yaml"
+    )
+
+
+def existing_evaluation_result(
+    run: dict[str, Any], benchmark: str
+) -> Optional[Path]:
+    """Return a completed same-version/seed result record, if one is reusable."""
+    version = str(run.get("artifact_version") or "")
+    seed = run.get("seed")
+    slug = str(run.get("evaluation_slug") or "")
+    if not version or seed is None or version not in slug or f"seed{seed}" not in slug:
+        return None
+
+    experiment = evaluation_experiment_name(run, benchmark)
+    record_path = (
+        PLUTO_ROOT / "artifacts/records/scenario_records" / f"{experiment}.json"
+    )
+    if not record_path.is_file():
+        return None
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        expected_count = len(
+            scenario_filter_tokens_from_path(evaluation_filter_path(benchmark))
+        )
+        if int(record.get("count", 0)) < expected_count:
+            return None
+        raw_metrics_dirs = record.get("resolved_metrics_dirs")
+        if not isinstance(raw_metrics_dirs, list) or not raw_metrics_dirs:
+            return None
+        for raw_path in raw_metrics_dirs:
+            metrics_path = Path(str(raw_path))
+            if not metrics_path.is_absolute():
+                metrics_path = PLUTO_ROOT / metrics_path
+            if not metrics_path.exists() or not any(metrics_path.rglob("*.parquet")):
+                return None
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, yaml.YAMLError):
+        return None
+    return record_path.resolve()
+
+
 def evaluation_method_environment(run: dict[str, Any]) -> dict[str, str]:
     updates = {
         "RUN_ZERO_SHOT": "false",
@@ -968,6 +1066,17 @@ def evaluation_method_environment(run: dict[str, Any]) -> dict[str, str]:
 def evaluate_one(
     run: dict[str, Any], benchmark: str, validated: dict[str, Any]
 ) -> None:
+    if validated.get("skip_completed_same_version_seed", False):
+        existing_result = existing_evaluation_result(run, benchmark)
+        if existing_result is not None:
+            print(
+                "Skipping completed evaluation with matching version/seed: "
+                f"{existing_result}",
+                flush=True,
+            )
+            run["evaluation_status"][benchmark] = "skipped_existing"
+            run.setdefault("evaluation_results", {})[benchmark] = str(existing_result)
+            return
     checkpoint = run.get("checkpoint")
     if (
         not checkpoint
@@ -1033,6 +1142,9 @@ def manifest_payload(
             "dry_run": validated["dry_run"],
             "checkpoint_policy": validated["checkpoint_policy"],
             "resume_policy": validated["resume_policy"],
+            "skip_completed_same_version_seed": validated[
+                "skip_completed_same_version_seed"
+            ],
         },
         "selection": {
             "arms": validated["selected_arms"],
@@ -1090,17 +1202,6 @@ def run_suite(
         for run in runs:
             if run.get("training_status") == "failed":
                 continue
-            if not run.get("checkpoint") and not validated["dry_run"]:
-                failures += 1
-                message = (
-                    f"No checkpoint for {run['arm_id']} seed {run['seed']} in {mode}"
-                )
-                run["evaluation_error"] = message
-                manifest["updated_at"] = utc_now()
-                atomic_write_json(manifest_path, manifest)
-                if not validated["continue_on_failure"]:
-                    raise RuntimeError(message)
-                continue
             for benchmark in validated["benchmarks"]:
                 print(
                     f"\n=== evaluate arm={run['arm_id']} seed={run['seed']} "
@@ -1131,6 +1232,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seeds", help="Comma list (1,2,3) or inclusive range (1:3)")
     parser.add_argument("--benchmarks", nargs="+", choices=sorted(BENCHMARKS))
     parser.add_argument("--checkpoint-policy", choices=sorted(CHECKPOINT_POLICIES))
+    parser.add_argument(
+        "--skip-completed-evaluation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Skip completed evaluation records whose slug matches artifact version and seed",
+    )
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--manifest", help="Optional resolved manifest output path")

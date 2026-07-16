@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -160,6 +161,94 @@ def test_server_evaluation_gpu_override_exposes_all_devices(monkeypatch) -> None
     )
 
     assert captured["CUDA_VISIBLE_DEVICES"] == "0,1,2,3,4,5,6,7"
+
+
+def write_completed_evaluation_record(
+    root: Path, run: dict, benchmark: str, *, count: int
+) -> Path:
+    filter_path = root / "config/scenario_filter/val14-fast.yaml"
+    filter_path.parent.mkdir(parents=True)
+    filter_path.write_text("scenario_tokens: [token-a, token-b]\n", encoding="utf-8")
+    metrics_dir = root / "existing_metrics"
+    metrics_dir.mkdir()
+    (metrics_dir / "runner_report.parquet").write_bytes(b"parquet")
+    experiment = runner.evaluation_experiment_name(run, benchmark)
+    record_path = root / f"artifacts/records/scenario_records/{experiment}.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
+        json.dumps(
+            {
+                "count": count,
+                "resolved_metrics_dirs": [str(metrics_dir)],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return record_path
+
+
+def test_evaluation_skips_completed_matching_version_and_seed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run = {
+        "arm_id": "uniform",
+        "seed": 6,
+        "method": "uniform",
+        "artifact_version": "v1.19",
+        "evaluation_slug": "uniform_v1.19_protocol_seed6",
+        "checkpoint": None,
+        "evaluation_status": {},
+    }
+    record_path = write_completed_evaluation_record(
+        tmp_path, run, "val14-fast", count=2
+    )
+    monkeypatch.setattr(runner, "PLUTO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("completed evaluation must not rerun"),
+    )
+
+    runner.evaluate_one(
+        run,
+        "val14-fast",
+        {
+            "skip_completed_same_version_seed": True,
+            "require_completed_checkpoint": True,
+            "dry_run": False,
+        },
+    )
+
+    assert run["evaluation_status"]["val14-fast"] == "skipped_existing"
+    assert run["evaluation_results"]["val14-fast"] == str(record_path.resolve())
+
+
+def test_evaluation_does_not_skip_incomplete_matching_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run = {
+        "arm_id": "uniform",
+        "seed": 6,
+        "method": "uniform",
+        "artifact_version": "v1.19",
+        "evaluation_slug": "uniform_v1.19_protocol_seed6",
+        "checkpoint": None,
+        "evaluation_status": {},
+    }
+    write_completed_evaluation_record(tmp_path, run, "val14-fast", count=1)
+    monkeypatch.setattr(runner, "PLUTO_ROOT", tmp_path)
+
+    with pytest.raises(RuntimeError, match="No completed checkpoint"):
+        runner.evaluate_one(
+            run,
+            "val14-fast",
+            {
+                "skip_completed_same_version_seed": True,
+                "require_completed_checkpoint": True,
+                "dry_run": False,
+            },
+        )
 
 
 def test_evaluation_only_requires_a_checkpoint_before_simulation() -> None:
