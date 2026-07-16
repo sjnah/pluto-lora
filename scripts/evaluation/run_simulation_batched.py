@@ -73,6 +73,16 @@ EXTRA_PYTHONPATHS = [
     WORKSPACE_ROOT / "interPlan",
 ]
 
+# These benchmark filters already contain their complete, curated token lists.
+# Loading every nuPlan SQLite log merely to reconstruct those same lists is
+# especially expensive when the dataset is mounted over NFS.
+DIRECT_TOKEN_FILTERS = {
+    "val14_benchmark",
+    "val14-fast",
+    "test14-hard",
+    "test14-hard-fast",
+}
+
 
 def configure_pythonpath() -> None:
     """Expose sibling checkout packages used by Hydra config search paths."""
@@ -166,6 +176,20 @@ def extract_scenario_tokens(filter_name: str, scenario_builder: Optional[str] = 
         # Override limit if specified
         if limit is not None:
             cfg.scenario_filter.limit_total_scenarios = limit
+
+        explicit_tokens = cfg.scenario_filter.get("scenario_tokens")
+        if filter_name in DIRECT_TOKEN_FILTERS and explicit_tokens:
+            tokens = [str(token) for token in explicit_tokens]
+            if len(tokens) != len(set(tokens)):
+                raise ValueError(f"Scenario filter {filter_name} contains duplicate tokens")
+            if limit is not None:
+                tokens = tokens[:limit]
+
+            print(
+                f"✅ Loaded {len(tokens)} scenario tokens directly from "
+                f"{filter_name}.yaml (database scan skipped)"
+            )
+            return tokens
         
         # Build scenario builder and load scenarios directly (no model needed)
         from nuplan.planning.script.builders.scenario_building_builder import build_scenario_builder

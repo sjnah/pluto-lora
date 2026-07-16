@@ -60,6 +60,10 @@ BENCHMARKS = {
     "interplan10",
     "interplan-benchmark",
 }
+STAGE_CUDA_ENVIRONMENT = {
+    "training": "PLUTO_TRAINING_CUDA_VISIBLE_DEVICES",
+    "evaluation": "PLUTO_EVALUATION_CUDA_VISIBLE_DEVICES",
+}
 
 
 class ConfigError(ValueError):
@@ -777,6 +781,18 @@ def clean_experiment_environment() -> dict[str, str]:
     return env
 
 
+def stage_cuda_environment(stage: str) -> dict[str, str]:
+    """Apply an optional machine-specific GPU set to one benchmark stage."""
+    variable = STAGE_CUDA_ENVIRONMENT[stage]
+    value = os.environ.get(variable)
+    if value is None:
+        return {}
+    value = value.strip()
+    if not value:
+        raise ConfigError(f"{variable} must not be empty when set")
+    return {"CUDA_VISIBLE_DEVICES": value}
+
+
 def print_command(command: list[str], env_updates: dict[str, str]) -> None:
     rendered_env = " ".join(
         f"{key}={shlex.quote(value)}" for key, value in sorted(env_updates.items())
@@ -846,6 +862,7 @@ def train_one(
         "FRESH_START": "true" if resume_policy == "fresh" else "false",
         "DRY_RUN": "false",
     }
+    updates.update(stage_cuda_environment("training"))
     if arm.method == "llm":
         updates["TYPE_ROUTING_MODE"] = arm.routing_mode
     env.update(updates)
@@ -972,6 +989,7 @@ def evaluate_one(
     updates["SKIP_RESULT_COLLECTION"] = (
         "false" if validated["collect_results"] else "true"
     )
+    updates.update(stage_cuda_environment("evaluation"))
     env.update(updates)
     if validated["dry_run"]:
         print_command(command, updates)

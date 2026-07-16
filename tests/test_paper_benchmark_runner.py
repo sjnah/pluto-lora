@@ -118,6 +118,50 @@ def test_type_routing_is_not_exported_for_non_llm_training(monkeypatch) -> None:
     assert "TYPE_ROUTING_MODE" not in captured
 
 
+def test_server_training_gpu_override_is_applied_only_when_configured(
+    monkeypatch,
+) -> None:
+    _, _, validated = load_default()
+    arm = validated["arms"]["uniform"]
+    run = next(run for run in runner.build_runs(validated) if run["arm_id"] == "uniform")
+    validated = dict(validated)
+    validated["dry_run"] = True
+    captured = {}
+
+    monkeypatch.setenv("PLUTO_TRAINING_CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(runner, "print_command", lambda _command, updates: captured.update(updates))
+
+    runner.train_one(run, arm, validated)
+
+    assert captured["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+def test_server_evaluation_gpu_override_exposes_all_devices(monkeypatch) -> None:
+    run = {
+        "arm_id": "zero_shot",
+        "seed": None,
+        "method": "zero_shot",
+        "checkpoint": "/tmp/dry-run-checkpoint.ckpt",
+        "evaluation_status": {},
+    }
+    captured = {}
+    monkeypatch.setenv("PLUTO_EVALUATION_CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+    monkeypatch.setattr(runner, "print_command", lambda _command, updates: captured.update(updates))
+
+    runner.evaluate_one(
+        run,
+        "test14-hard-fast",
+        {
+            "require_completed_checkpoint": True,
+            "dry_run": True,
+            "disable_simulation_log": True,
+            "collect_results": True,
+        },
+    )
+
+    assert captured["CUDA_VISIBLE_DEVICES"] == "0,1,2,3,4,5,6,7"
+
+
 def test_evaluation_only_requires_a_checkpoint_before_simulation() -> None:
     run = {
         "arm_id": "uniform",

@@ -66,12 +66,13 @@ apply_cli_overrides() {
 apply_cli_overrides "$@"
 configure_eval_import_environment
 
-# Configuration: Number of scenarios to evaluate per stage
-# This ensures all enabled methods use the same scenarios
+# Configuration: Number of scenarios to evaluate per stage.
+# "auto" uses every token explicitly listed in the selected filter.
+# This ensures all enabled methods use the same scenarios.
 # Note: Sequential worker is used to minimize memory usage. 
 # WARNING: If you get OOM (Out Of Memory) errors, enable batch processing (see BATCH_SIZE below).
 # The simulation framework builds all simulation objects upfront, so large scenario counts can cause OOM.
-SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-2000} # 2000
+SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-auto}
 FILTER_NAME=${FILTER_NAME:-val14_benchmark}
 EXPERIMENT_SUFFIX=${EXPERIMENT_SUFFIX:-val14_benchmark}
 TEST_LABEL=${TEST_LABEL:-Val14 Benchmark}

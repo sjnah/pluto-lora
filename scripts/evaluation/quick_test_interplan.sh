@@ -73,6 +73,14 @@ apply_cli_overrides "$@"
 # - benchmark_scenarios: All 335 scenarios
 INTERPLAN_FILTER=${INTERPLAN_FILTER:-benchmark_scenarios} # interplan10 or benchmark_scenarios
 
+# Optional distributed resource settings. The server Compose environment sets
+# these explicitly; local runs retain InterPlan's existing defaults.
+SIMULATION_WORKER=${SIMULATION_WORKER:-}
+SIMULATION_NUM_GPUS=${SIMULATION_NUM_GPUS:-}
+SIMULATION_NUM_CPUS=${SIMULATION_NUM_CPUS:-}
+SIMULATION_WORKER_THREADS=${SIMULATION_WORKER_THREADS:-}
+SIMULATION_RAY_LOG_TO_DRIVER=${SIMULATION_RAY_LOG_TO_DRIVER:-}
+
 # Model selection flags. Set any flag to false/0/no to skip that model.
 RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-true}
 RUN_RULE_BASED=${RUN_RULE_BASED:-true}
@@ -150,7 +158,14 @@ run_interplan_simulation() {
     local experiment=$3
     local eval_pythonpath="${PYTHONPATH:-}"
     local simulation_log_overrides=()
+    local worker_overrides=()
     is_enabled "${DISABLE_SIMULATION_LOG:-false}" && simulation_log_overrides=(callback=no_simulation_log)
+
+    [ -n "$SIMULATION_WORKER" ] && worker_overrides+=("worker=${SIMULATION_WORKER}")
+    [ -n "$SIMULATION_NUM_GPUS" ] && worker_overrides+=("number_of_gpus_allocated_per_simulation=${SIMULATION_NUM_GPUS}")
+    [ -n "$SIMULATION_NUM_CPUS" ] && worker_overrides+=("number_of_cpus_allocated_per_simulation=${SIMULATION_NUM_CPUS}")
+    [ -n "$SIMULATION_WORKER_THREADS" ] && worker_overrides+=("worker.threads_per_node=${SIMULATION_WORKER_THREADS}")
+    [ -n "$SIMULATION_RAY_LOG_TO_DRIVER" ] && worker_overrides+=("worker.log_to_driver=${SIMULATION_RAY_LOG_TO_DRIVER}")
 
     if [ "${PLUTO_EVAL_ALLOW_WANDB:-0}" != "1" ]; then
         eval_pythonpath="${WANDB_SHIM_ROOT}:${eval_pythonpath}"
@@ -175,6 +190,7 @@ run_interplan_simulation() {
         +planner.pluto_planner.planner_ckpt="$ckpt" \
         experiment_name="$experiment" \
         "${simulation_log_overrides[@]}" \
+        "${worker_overrides[@]}" \
         hydra.searchpath="[\
 pkg://interplan.planning.script.config.common,\
 pkg://interplan.planning.script.config.simulation,\

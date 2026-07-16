@@ -81,13 +81,13 @@ TEST_LABEL=${TEST_LABEL:-Test14-Hard}
 SCENARIO_BUILDER=${SCENARIO_BUILDER:-nuplan_v1_1_test}
 COLLECT_TEST=${COLLECT_TEST:-test14-hard}
 
-# Configuration: Number of scenarios to evaluate per stage
-# This ensures all enabled methods use the same scenarios
+# Configuration: Number of scenarios to evaluate per stage.
+# "auto" uses every token explicitly listed in the selected filter.
+# This ensures all enabled methods use the same scenarios.
 # Note: Sequential worker is used to minimize memory usage. 
 # WARNING: If you get OOM (Out Of Memory) errors, enable batch processing (see BATCH_SIZE below).
 # The simulation framework builds all simulation objects upfront, so large scenario counts can cause OOM.
-# test14-hard.yaml contains 286 scenarios, so default to using all of them
-SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-286} # 286
+SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-auto}
 
 # Model selection flags. Set any flag to false/0/no to skip that model.
 RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
