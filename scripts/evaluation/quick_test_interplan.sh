@@ -73,6 +73,11 @@ apply_cli_overrides "$@"
 # - benchmark_scenarios: All 335 scenarios
 INTERPLAN_FILTER=${INTERPLAN_FILTER:-benchmark_scenarios} # interplan10 or benchmark_scenarios
 
+# Optional local SQLite DB root. When unset, interplan10 automatically prefers
+# the server-local snapshot under the workspace once all seven required logs
+# are present. Larger benchmark_scenarios runs retain the shared dataset root.
+INTERPLAN_DATA_ROOT=${INTERPLAN_DATA_ROOT:-}
+
 # Optional distributed resource settings. The server Compose environment sets
 # these explicitly; local runs retain InterPlan's existing defaults.
 SIMULATION_WORKER=${SIMULATION_WORKER:-}
@@ -180,11 +185,12 @@ run_interplan_simulation() {
     # We need to find where the actual data is located
     WANDB_DISABLED="${WANDB_DISABLED:-true}" \
     PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}" \
+    PLUTO_FORCE_MATH_SDPA="${PLUTO_FORCE_MATH_SDPA:-1}" \
     PYTHONPATH="$eval_pythonpath" \
     python - "$INTERPLAN_SCRIPT" \
         +simulation=default_interplan_benchmark \
         scenario_filter=$filter \
-        scenario_builder.data_root='${oc.env:NUPLAN_DATA_ROOT}/nuplan-v1.1_test/data/cache/test' \
+        scenario_builder.data_root="$INTERPLAN_DATA_ROOT" \
         scenario_builder.sensor_root='${oc.env:NUPLAN_DATA_ROOT}/nuplan-v1.1_test/sensor_blobs' \
         planner=pluto_planner \
         +planner.pluto_planner.planner_ckpt="$ckpt" \
@@ -361,6 +367,42 @@ run_enabled_interplan_models() {
 source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/python_runtime.sh"
+
+SHARED_INTERPLAN_DATA_ROOT="${NUPLAN_DATA_ROOT}/nuplan-v1.1_test/data/cache/test"
+LOCAL_INTERPLAN10_DATA_ROOT="${WORKSPACE_ROOT}/.local-data/interplan10-db"
+INTERPLAN10_LOG_NAMES=(
+    2021.05.25.12.30.39_veh-25_00321_01196
+    2021.05.25.14.16.10_veh-35_00083_00485
+    2021.10.06.04.07.24_veh-49_00776_01719
+    2021.06.28.21.29.28_veh-16_01912_03183
+    2021.10.06.02.32.50_veh-53_00633_00800
+    2021.06.03.12.02.06_veh-35_04692_04763
+    2021.09.22.03.46.15_veh-51_01522_02013
+)
+
+has_complete_interplan10_snapshot() {
+    local root=$1
+    local log_name
+    [ -d "$root" ] || return 1
+    for log_name in "${INTERPLAN10_LOG_NAMES[@]}"; do
+        [ -f "${root}/${log_name}.db" ] || return 1
+    done
+}
+
+if [ -z "$INTERPLAN_DATA_ROOT" ]; then
+    if [ "$INTERPLAN_FILTER" = "interplan10" ] && has_complete_interplan10_snapshot "$LOCAL_INTERPLAN10_DATA_ROOT"; then
+        INTERPLAN_DATA_ROOT="$LOCAL_INTERPLAN10_DATA_ROOT"
+    else
+        INTERPLAN_DATA_ROOT="$SHARED_INTERPLAN_DATA_ROOT"
+    fi
+fi
+
+if [ ! -d "$INTERPLAN_DATA_ROOT" ]; then
+    echo "Error: interPlan DB root does not exist: $INTERPLAN_DATA_ROOT" >&2
+    exit 1
+fi
+export INTERPLAN_DATA_ROOT
+echo "interPlan DB root: $INTERPLAN_DATA_ROOT"
 
 # Directory to save scenario token records
 SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"

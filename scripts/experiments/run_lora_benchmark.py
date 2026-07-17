@@ -115,6 +115,12 @@ def require_choice(value: object, choices: set[str], label: str) -> str:
     return text
 
 
+def require_bool(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"Expected boolean at {label}")
+    return value
+
+
 def require_id(value: object, label: str) -> str:
     text = str(value or "")
     if not SAFE_ID.fullmatch(text):
@@ -562,6 +568,10 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
         "feature_cache_name": feature_cache_name,
         "pretrained_checkpoint": pretrained_checkpoint,
         "retrain_tag": training.get("retrain_tag"),
+        "use_ema_checkpoint": require_bool(
+            evaluation.get("use_ema_checkpoint", False),
+            "evaluation.use_ema_checkpoint",
+        ),
         "require_completed_checkpoint": bool(
             evaluation.get("require_completed_checkpoint", True)
         ),
@@ -577,7 +587,11 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def checkpoint_candidates(experiment_dir: Path) -> list[Path]:
+def checkpoint_candidates(
+    experiment_dir: Path, *, use_ema_checkpoint: bool = False
+) -> list[Path]:
+    if use_ema_checkpoint:
+        return [experiment_dir / "lora_checkpoints/merged_final_ema.ckpt"]
     return [
         experiment_dir / "lora_checkpoints/merged_final.ckpt",
         experiment_dir / "checkpoints/last.ckpt",
@@ -618,6 +632,7 @@ def discover_checkpoint(
     protocol_id: str,
     protocol_sha256: str,
     execution_mode: str,
+    use_ema_checkpoint: bool = False,
 ) -> Optional[Path]:
     output_root = PLUTO_ROOT / "outputs"
     if not output_root.is_dir():
@@ -632,7 +647,13 @@ def discover_checkpoint(
             execution_mode=execution_mode,
         ):
             continue
-        candidates.extend(path for path in checkpoint_candidates(experiment_dir) if path.is_file())
+        candidates.extend(
+            path
+            for path in checkpoint_candidates(
+                experiment_dir, use_ema_checkpoint=use_ema_checkpoint
+            )
+            if path.is_file()
+        )
     if not candidates:
         return None
     return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
@@ -726,7 +747,10 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
                     if arm.method_values["CFG_METHOD_MODE"] == "uniform"
                     else "staged_curriculum"
                 ),
+                use_ema_checkpoint=validated["use_ema_checkpoint"],
             )
+            if validated["use_ema_checkpoint"]:
+                slug = f"{slug}_ema"
             runs.append(
                 {
                     "arm_id": arm_id,
@@ -744,6 +768,9 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
                     "evaluation_slug": slug,
                     "checkpoint": str(discovered) if discovered else None,
                     "checkpoint_source": "override" if override else ("discovered" if discovered else None),
+                    "checkpoint_variant": (
+                        "ema" if validated["use_ema_checkpoint"] else "standard"
+                    ),
                     "training_status": "pending",
                     "evaluation_status": {},
                 }
@@ -909,6 +936,7 @@ def train_one(
             if arm.method_values and arm.method_values["CFG_METHOD_MODE"] == "uniform"
             else "staged_curriculum"
         ),
+        use_ema_checkpoint=validated["use_ema_checkpoint"],
     )
     if checkpoint is None:
         raise RuntimeError(
@@ -1142,6 +1170,7 @@ def manifest_payload(
             "dry_run": validated["dry_run"],
             "checkpoint_policy": validated["checkpoint_policy"],
             "resume_policy": validated["resume_policy"],
+            "use_ema_checkpoint": validated["use_ema_checkpoint"],
             "skip_completed_same_version_seed": validated[
                 "skip_completed_same_version_seed"
             ],

@@ -1,3 +1,5 @@
+import os
+from contextlib import nullcontext
 from typing import Optional
 
 import torch
@@ -12,6 +14,29 @@ def as_bool_mask(mask: Optional[Tensor]) -> Optional[Tensor]:
     if mask is None or mask.dtype == torch.bool:
         return mask
     return mask.bool()
+
+
+def math_sdpa_context(query: Optional[Tensor]):
+    """Use the stable CUDA math SDPA backend when explicitly requested."""
+    force_math = os.environ.get("PLUTO_FORCE_MATH_SDPA", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not force_math or not isinstance(query, Tensor) or not query.is_cuda:
+        return nullcontext()
+
+    cuda_backend = getattr(torch.backends, "cuda", None)
+    sdp_kernel = getattr(cuda_backend, "sdp_kernel", None)
+    if sdp_kernel is None:
+        return nullcontext()
+
+    return sdp_kernel(
+        enable_flash=False,
+        enable_math=True,
+        enable_mem_efficient=False,
+    )
 
 
 def run_multihead_attention(attn: nn.MultiheadAttention, *args, **kwargs):
@@ -41,21 +66,23 @@ def run_multihead_attention(attn: nn.MultiheadAttention, *args, **kwargs):
                 args[2] = value_view
         args = tuple(args)
 
-    mha_backend = getattr(torch.backends, "mha", None)
-    if not has_mask or mha_backend is None:
-        return attn(*args, **kwargs)
+    query = kwargs.get("query", args[0] if len(args) > 0 else None)
+    with math_sdpa_context(query):
+        mha_backend = getattr(torch.backends, "mha", None)
+        if not has_mask or mha_backend is None:
+            return attn(*args, **kwargs)
 
-    get_fastpath_enabled = getattr(mha_backend, "get_fastpath_enabled", None)
-    set_fastpath_enabled = getattr(mha_backend, "set_fastpath_enabled", None)
-    if get_fastpath_enabled is None or set_fastpath_enabled is None:
-        return attn(*args, **kwargs)
+        get_fastpath_enabled = getattr(mha_backend, "get_fastpath_enabled", None)
+        set_fastpath_enabled = getattr(mha_backend, "set_fastpath_enabled", None)
+        if get_fastpath_enabled is None or set_fastpath_enabled is None:
+            return attn(*args, **kwargs)
 
-    previous = get_fastpath_enabled()
-    set_fastpath_enabled(False)
-    try:
-        return attn(*args, **kwargs)
-    finally:
-        set_fastpath_enabled(previous)
+        previous = get_fastpath_enabled()
+        set_fastpath_enabled(False)
+        try:
+            return attn(*args, **kwargs)
+        finally:
+            set_fastpath_enabled(previous)
 
 
 class Mlp(nn.Module):
