@@ -229,6 +229,9 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_TYPE_ROUTING_ENABLED_SAMPLER_MODE": str(
             type_routing.get("enabled_sampler_mode", "")
         ),
+        "CFG_TYPE_ROUTING_STRENGTH": float(
+            type_routing.get("multiplier_strength", 1.0)
+        ),
     }
 
 

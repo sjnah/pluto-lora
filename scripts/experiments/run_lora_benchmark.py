@@ -303,9 +303,15 @@ def validate_arm(
     if routing_mode == "on":
         if method != "llm" or not values["CFG_TYPE_ROUTING_SUPPORTED"]:
             raise ConfigError(f"Type routing is not supported for arm {arm_id}")
-        if values["CFG_TYPE_ROUTING_ENABLED_SAMPLER_MODE"] != "exposure_capped_weighted":
+        expected_routing_sampler = (
+            "exact_bucket_quota"
+            if sampler_contract == "exact_bucket_quota"
+            else "exposure_capped_weighted"
+        )
+        if values["CFG_TYPE_ROUTING_ENABLED_SAMPLER_MODE"] != expected_routing_sampler:
             raise ConfigError(
-                f"Type-on arm {arm_id} must use exposure_capped_weighted"
+                f"Type-on arm {arm_id} must keep its matched sampler contract "
+                f"({expected_routing_sampler})"
             )
     elif method != "llm" and values["CFG_TYPE_ROUTING_SUPPORTED"]:
         raise ConfigError(f"Non-LLM arm {arm_id} unexpectedly advertises type routing")
@@ -545,6 +551,40 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError("llm_capped_off/on must use the same sampler contract")
         if {off.routing_mode, on.routing_mode} != {"off", "on"}:
             raise ConfigError("llm_capped_off/on must differ in routing mode")
+
+    exact_pair = [resolved_arms.get("llm_exact_off"), resolved_arms.get("llm_exact_on")]
+    if all(exact_pair):
+        off, on = exact_pair
+        assert off is not None and on is not None
+        if off.sampler_contract != on.sampler_contract or off.sampler_contract != "exact_bucket_quota":
+            raise ConfigError("llm_exact_off/on must use exact_bucket_quota")
+        if {off.routing_mode, on.routing_mode} != {"off", "on"}:
+            raise ConfigError("llm_exact_off/on must differ in routing mode")
+        matched_keys = (
+            "CFG_FILTER_PREFIX",
+            "CFG_SCORE_METHOD",
+            "CFG_CURRICULUM_METHOD",
+            "CFG_SAMPLER_MODE",
+            "CFG_MAX_REPEAT_PER_SCENARIO",
+            "CFG_PERSISTENT_EXPOSURE",
+            "CFG_MAX_REPEAT_PER_NEAR_DUPLICATE_GROUP",
+            "CFG_NEAR_DUPLICATE_GROUP_WEIGHTING",
+            "CFG_MAX_CUMULATIVE_EXPOSURE_PER_SCENARIO",
+            "CFG_MAX_CUMULATIVE_EXPOSURE_PER_NEAR_DUPLICATE_GROUP",
+        )
+        mismatched = [
+            key
+            for key in matched_keys
+            if off.method_values[key] != on.method_values[key]
+        ]
+        if mismatched:
+            raise ConfigError(
+                "llm_exact_off/on must differ only in routing policy fields; "
+                f"mismatched contracts: {', '.join(mismatched)}"
+            )
+        strength = float(on.method_values["CFG_TYPE_ROUTING_STRENGTH"])
+        if not 0.0 < strength <= 1.0:
+            raise ConfigError("llm_exact_on routing strength must be in (0, 1]")
 
     overrides = payload.get("checkpoint_overrides") or {}
     if not isinstance(overrides, dict):

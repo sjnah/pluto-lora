@@ -40,7 +40,7 @@ phases:
     a: [0.70, 0.20, 0.10]
     # Phase B is overridden per epoch by phases.pacing.phase_alpha.b.
     # This static value is the final alpha=0.8 target and acts as fallback.
-    b: [0.066666666667, 0.066666666667, 0.866666666666]
+    b: [0.133333333334, 0.133333333334, 0.733333333332]
     # Phase C keeps 20% uniform replay and 80% hard-prior mass:
     # q=(1-alpha)U+alpha H, alpha=0.8, U=[1/3,1/3,1/3], H=[0,0,1].
     c: [0.066666666667, 0.066666666667, 0.866666666666]

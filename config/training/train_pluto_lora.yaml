@@ -112,6 +112,9 @@ curriculum:
   demonstration_type_metadata_path: null
   demonstration_type_policy:
     stage_role: all_consolidation
+    # 1.0 uses the configured stage multipliers. Exact type-on shrinks this
+    # toward 1.0 through its method config because routing-eligible data is sparse.
+    multiplier_strength: 1.0
     stage_presets:
       easy_oriented:
         necessary_exception_multiplier: 1.0

@@ -7,6 +7,7 @@ without importing the full PLUTO/nuPlan training stack.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import random
@@ -304,6 +305,197 @@ def build_exact_bucket_quota_indices(
             for bucket_name in BUCKET_NAMES
         },
         "repeat_stats": bucket_metadata,
+    }
+    return selected, metadata
+
+
+def build_type_routed_exact_bucket_quota_indices(
+    bucket_sizes: Sequence[int],
+    target_proportions: Sequence[float],
+    *,
+    scenario_ids: Sequence[str],
+    routing_weights: Sequence[float],
+    demonstration_types: Sequence[str],
+    max_repeat_per_scenario: int,
+    max_exposure_per_demonstration_type: Mapping[str, int] | None = None,
+    seed: int,
+    epoch: int,
+    shuffle_output: bool = True,
+) -> Tuple[List[int], Dict[str, object]]:
+    """Keep exact bucket totals while routing exposure within each bucket.
+
+    Draws use weighted-fair priorities ``(draw_count + 1) / routing_weight``.
+    Equal weights remain coverage-first, while routing multipliers change only
+    which scenarios are repeated or omitted inside a bucket. Demonstration
+    types can therefore never alter the requested easy/medium/hard totals.
+    """
+
+    total_samples = int(sum(bucket_sizes))
+    if len(bucket_sizes) != 3:
+        raise ValueError(f"Expected three bucket sizes, got {len(bucket_sizes)}")
+    if any(int(size) <= 0 for size in bucket_sizes):
+        raise ValueError(f"Curriculum bucket sizes must be positive: {bucket_sizes}")
+    if not (
+        len(scenario_ids)
+        == len(routing_weights)
+        == len(demonstration_types)
+        == total_samples
+    ):
+        raise ValueError(
+            "type-routing metadata must align with the concatenated dataset: "
+            f"{len(scenario_ids)} ids, {len(routing_weights)} weights, "
+            f"{len(demonstration_types)} types, {total_samples} samples"
+        )
+    if len(set(str(scenario_id) for scenario_id in scenario_ids)) != total_samples:
+        raise ValueError("scenario_ids must be unique across curriculum buckets")
+    if max_repeat_per_scenario <= 0:
+        raise ValueError("max_repeat_per_scenario must be positive")
+    if any(
+        not math.isfinite(float(weight)) or float(weight) < 0.0
+        for weight in routing_weights
+    ):
+        raise ValueError("routing_weights must be finite and non-negative")
+
+    requested_counts = largest_remainder_counts(total_samples, target_proportions)
+    offsets = [0]
+    for size in bucket_sizes[:-1]:
+        offsets.append(offsets[-1] + int(size))
+
+    category_caps = {
+        str(key): max(0, int(value))
+        for key, value in (max_exposure_per_demonstration_type or {}).items()
+    }
+    scenario_exposure: Counter[str] = Counter()
+    category_exposure: Counter[str] = Counter()
+    bucket_category_exposure: Dict[str, Counter[str]] = {
+        bucket_name: Counter() for bucket_name in BUCKET_NAMES
+    }
+    selected: List[int] = []
+    selected_per_bucket = [0, 0, 0]
+    heaps: List[List[Tuple[float, float, int]]] = []
+    tie_seed = int(seed) + int(epoch) * 9176 + 53
+    for bucket_idx, (offset, size) in enumerate(zip(offsets, bucket_sizes)):
+        heap: List[Tuple[float, float, int]] = []
+        for index in range(offset, offset + int(size)):
+            weight = float(routing_weights[index])
+            if weight <= 0.0:
+                continue
+            tie_break = stable_hash_fraction(str(scenario_ids[index]), tie_seed + bucket_idx)
+            heapq.heappush(heap, (1.0 / weight, tie_break, index))
+        heaps.append(heap)
+
+    while len(selected) < total_samples:
+        active_buckets = [
+            bucket_idx
+            for bucket_idx, requested in enumerate(requested_counts)
+            if selected_per_bucket[bucket_idx] < requested
+        ]
+        if not active_buckets:
+            break
+        bucket_idx = min(
+            active_buckets,
+            key=lambda idx: (
+                selected_per_bucket[idx] / max(1, requested_counts[idx]),
+                idx,
+            ),
+        )
+        heap = heaps[bucket_idx]
+        chosen: Tuple[float, float, int] | None = None
+        while heap:
+            candidate = heapq.heappop(heap)
+            index = candidate[2]
+            demo_type = str(demonstration_types[index] or "normal")
+            if (
+                demo_type in category_caps
+                and category_exposure[demo_type] >= category_caps[demo_type]
+            ):
+                continue
+            chosen = candidate
+            break
+        if chosen is None:
+            bucket_name = BUCKET_NAMES[bucket_idx]
+            raise ValueError(
+                f"Type-routing constraints make exact quota impossible for {bucket_name}: "
+                f"selected {selected_per_bucket[bucket_idx]} of "
+                f"{requested_counts[bucket_idx]} draws. Increase repeat/type caps or "
+                "revise the routing policy."
+            )
+
+        _, tie_break, index = chosen
+        scenario_id = str(scenario_ids[index])
+        demo_type = str(demonstration_types[index] or "normal")
+        selected.append(index)
+        selected_per_bucket[bucket_idx] += 1
+        scenario_exposure[scenario_id] += 1
+        category_exposure[demo_type] += 1
+        bucket_category_exposure[BUCKET_NAMES[bucket_idx]][demo_type] += 1
+        if scenario_exposure[scenario_id] < max_repeat_per_scenario:
+            next_priority = (
+                scenario_exposure[scenario_id] + 1
+            ) / float(routing_weights[index])
+            heapq.heappush(heap, (next_priority, tie_break, index))
+
+    if shuffle_output:
+        rng = random.Random(int(seed) + int(epoch) * 9176 + 17)
+        rng.shuffle(selected)
+
+    repeat_metadata: Dict[str, Dict[str, float | int]] = {}
+    for bucket_idx, (bucket_name, offset, size, requested) in enumerate(
+        zip(BUCKET_NAMES, offsets, bucket_sizes, requested_counts)
+    ):
+        stop = offset + int(size)
+        bucket_indices = list(range(offset, stop))
+        bucket_draws = [index for index in selected if offset <= index < stop]
+        stats = repeat_stats(bucket_draws, bucket_indices)
+        stats.update(
+            {
+                "repeat_cap_reached": sum(
+                    count >= max_repeat_per_scenario
+                    for count in Counter(bucket_draws).values()
+                ),
+                "target_proportion": normalize_proportions(target_proportions)[bucket_idx],
+                "requested_draws": int(requested),
+                "actual_draws": int(selected_per_bucket[bucket_idx]),
+                "actual_proportion": selected_per_bucket[bucket_idx] / total_samples,
+            }
+        )
+        repeat_metadata[bucket_name] = stats
+
+    exposure_values = list(scenario_exposure.values())
+    metadata: Dict[str, object] = {
+        "sampler_mode": "exact_bucket_quota",
+        "type_routing_mode": "enabled_within_bucket",
+        "epoch": int(epoch),
+        "seed": int(seed),
+        "total_samples": total_samples,
+        "bucket_sizes": dict(zip(BUCKET_NAMES, map(int, bucket_sizes))),
+        "target_proportions": dict(
+            zip(BUCKET_NAMES, normalize_proportions(target_proportions))
+        ),
+        "requested_draws": dict(zip(BUCKET_NAMES, requested_counts)),
+        "actual_draws": dict(zip(BUCKET_NAMES, selected_per_bucket)),
+        "actual_proportions": {
+            bucket_name: selected_per_bucket[index] / total_samples
+            for index, bucket_name in enumerate(BUCKET_NAMES)
+        },
+        "repeat_stats": repeat_metadata,
+        "scenario_exposure": dict(scenario_exposure),
+        "demonstration_type_exposure": dict(category_exposure),
+        "bucket_demonstration_type_exposure": {
+            bucket_name: dict(counts)
+            for bucket_name, counts in bucket_category_exposure.items()
+        },
+        "max_exposure_per_demonstration_type": category_caps,
+        "unique_scenario_count": len(scenario_exposure),
+        "max_scenario_exposure": max(exposure_values, default=0),
+        "mean_scenario_exposure": (
+            sum(exposure_values) / len(exposure_values) if exposure_values else 0.0
+        ),
+        "effective_sample_size": (
+            (sum(exposure_values) ** 2) / sum(value * value for value in exposure_values)
+            if exposure_values
+            else 0.0
+        ),
     }
     return selected, metadata
 

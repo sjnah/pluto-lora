@@ -139,7 +139,7 @@ fi
 # Example: BATCH_SIZE=200 will process scenarios in batches of 200.
 # Set to empty or 0 to disable batching (not recommended for large scenario counts).
 # Recommended: 150-300 depending on available memory
-BATCH_SIZE=${BATCH_SIZE:-300}
+BATCH_SIZE=${BATCH_SIZE:-50}
 
 # Simulation type: nonreactive preserves the historical Val14 quick-test path.
 # Set to "reactive" for closed_loop_reactive_agents.

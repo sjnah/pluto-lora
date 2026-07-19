@@ -40,6 +40,7 @@ from src.custom_training.curriculum_sampling import (
     build_exact_bucket_quota_indices,
     build_exposure_capped_bucket_quota_indices,
     build_exposure_capped_weighted_indices,
+    build_type_routed_exact_bucket_quota_indices,
     scheduled_target_proportions,
     validate_demonstration_type_routing,
 )
@@ -94,6 +95,9 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         batch_size: int = 1,
         accumulate_grad_batches: int = 1,
         pacing_schedule: Optional[Dict[str, Any]] = None,
+        type_routing_weights: Optional[List[float]] = None,
+        max_exposure_per_demonstration_type: Optional[Dict[str, int]] = None,
+        type_routing_strength: float = 1.0,
     ):
         self._bucket_sizes = [int(size) for size in bucket_sizes]
         self._target_proportions = [float(value) for value in target_proportions]
@@ -113,6 +117,23 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
         self._batch_size = max(1, int(batch_size))
         self._accumulate_grad_batches = max(1, int(accumulate_grad_batches))
         self._pacing_schedule = dict(_plain_config(pacing_schedule or {}))
+        self._type_routing_weights = (
+            [float(weight) for weight in type_routing_weights]
+            if type_routing_weights is not None
+            else None
+        )
+        self._exact_max_exposure_per_demonstration_type = dict(
+            max_exposure_per_demonstration_type or {}
+        )
+        self._type_routing_strength = float(type_routing_strength)
+        if self._type_routing_weights is not None:
+            if len(self._type_routing_weights) != sum(self._bucket_sizes):
+                raise ValueError("type-routing weights must align with exact bucket sizes")
+            if self._max_repeat_per_group > 0:
+                raise ValueError(
+                    "Exact within-bucket type routing does not accept group caps; "
+                    "keep the exact off/on near-duplicate contract matched and disabled"
+                )
         self._epoch: Optional[int] = None
 
     def set_epoch(self, epoch: int) -> None:
@@ -150,6 +171,16 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
             "max_cumulative_exposure_per_group": self._max_cumulative_exposure_per_group,
             "random_seed": self._random_seed,
         }
+        if self._type_routing_weights is not None:
+            payload.update(
+                {
+                    "type_routing_weights": self._type_routing_weights,
+                    "exact_max_exposure_per_demonstration_type": (
+                        self._exact_max_exposure_per_demonstration_type
+                    ),
+                    "type_routing_strength": self._type_routing_strength,
+                }
+            )
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
@@ -160,7 +191,25 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
             epoch=epoch,
             phase_start_epoch=self._phase_start_epoch,
         )
-        if self._scenario_records and self._max_repeat_per_group > 0:
+        if self._type_routing_weights is not None:
+            indices, metadata = build_type_routed_exact_bucket_quota_indices(
+                self._bucket_sizes,
+                target_proportions,
+                scenario_ids=[record["scenario_id"] for record in self._scenario_records],
+                routing_weights=self._type_routing_weights,
+                demonstration_types=[
+                    record.get("demonstration_type", "normal")
+                    for record in self._scenario_records
+                ],
+                max_repeat_per_scenario=self._max_repeat_per_scenario,
+                max_exposure_per_demonstration_type=(
+                    self._exact_max_exposure_per_demonstration_type
+                ),
+                seed=self._random_seed,
+                epoch=epoch,
+            )
+            metadata["type_routing_strength"] = self._type_routing_strength
+        elif self._scenario_records and self._max_repeat_per_group > 0:
             indices, metadata = build_exposure_capped_bucket_quota_indices(
                 self._bucket_sizes,
                 target_proportions,
@@ -730,11 +779,6 @@ def distributed_curriculum_sampler_init(
     type_mode = validate_demonstration_type_routing(
         demonstration_type_mode, curriculum_method
     )
-    if type_mode == "enabled" and sampler_mode == "exact_bucket_quota":
-        raise ValueError(
-            "Demonstration-type routing currently requires exposure_capped_weighted so its "
-            "stage-level expected exposure weights remain explicit"
-        )
     
     split_names = split_names or [f"split_{idx}" for idx in range(len(scenario_datasets))]
 
@@ -768,32 +812,9 @@ def distributed_curriculum_sampler_init(
                 }
             )
 
-    if sampler_mode == "exact_bucket_quota":
-        bucket_sizes = [len(dataset._scenarios) for dataset in scenario_datasets]
-        sampler = ExactBucketQuotaSampler(
-            bucket_sizes=bucket_sizes,
-            target_proportions=normalized_weights,
-            max_repeat_per_scenario=max_repeat_per_scenario,
-            random_seed=random_seed,
-            sampling_log_path=sampling_log_path,
-            score_method=score_method,
-            phase_name=phase_name,
-            phase_start_epoch=phase_start_epoch,
-            scenario_records=scenario_records,
-            max_repeat_per_group=max_repeat_per_near_duplicate_group,
-            cumulative_exposure_state_path=cumulative_exposure_state_path,
-            max_cumulative_exposure_per_scenario=max_cumulative_exposure_per_scenario,
-            max_cumulative_exposure_per_group=max_cumulative_exposure_per_near_duplicate_group,
-            batch_size=batch_size,
-            accumulate_grad_batches=accumulate_grad_batches,
-            pacing_schedule=pacing_schedule,
-        )
-        distributed_weighted_sampler = DistributedSamplerWrapper(sampler)
-        return distributed_weighted_sampler
-
-    # Legacy mode: create weights for each scenario. Divide by split size so
-    # split_weights represent split-level sampling probabilities, not per-sample
-    # weights.
+    # Divide by split size so split weights represent split-level probability
+    # mass. Exact type routing later normalizes these weights only within each
+    # bucket, preserving the bucket draw totals.
     all_weights = []
     for split_name, dataset, weight in zip(split_names, scenario_datasets, normalized_weights):
         num_scenarios = len(dataset._scenarios)
@@ -802,6 +823,8 @@ def distributed_curriculum_sampler_init(
 
     type_metadata: Dict[str, Dict[str, Any]] = {}
     type_draw_caps: Dict[str, int] = {}
+    absolute_caps: Dict[str, float] = {}
+    routing_strength = 1.0
     if demonstration_type_metadata_path:
         metadata_path = Path(demonstration_type_metadata_path)
         if metadata_path.exists():
@@ -815,14 +838,21 @@ def distributed_curriculum_sampler_init(
 
     if type_mode == "enabled":
         policy = dict(demonstration_type_policy or {})
+        routing_strength = float(policy.get("multiplier_strength", 1.0))
+        if not 0.0 <= routing_strength <= 1.0:
+            raise ValueError("demonstration type multiplier_strength must be in [0, 1]")
         role = str(policy.get("stage_role", phase_name or "all_consolidation"))
         presets = policy.get("stage_presets", {})
         preset = dict(presets.get(role, presets.get("all_consolidation", {})))
-        multipliers = {
+        configured_multipliers = {
             "normal": 1.0,
             "necessary_exception": float(preset.get("necessary_exception_multiplier", 1.0)),
             "expert_error": float(preset.get("expert_error_multiplier", 0.1)),
             "uncertain": float(preset.get("uncertain_multiplier", 0.5)),
+        }
+        multipliers = {
+            demo_type: 1.0 + routing_strength * (multiplier - 1.0)
+            for demo_type, multiplier in configured_multipliers.items()
         }
         for index, record in enumerate(scenario_records):
             meta = type_metadata.get(record["scenario_id"], {})
@@ -833,8 +863,11 @@ def distributed_curriculum_sampler_init(
             all_weights[index] *= multipliers.get(demo_type, multipliers["uncertain"])
             record["demonstration_type"] = demo_type
             record["type_routing_eligible"] = eligible
+            record["type_routing_multiplier"] = multipliers.get(
+                demo_type, multipliers["uncertain"]
+            )
 
-    if type_mode == "enabled" or near_duplicate_group_weighting:
+    if near_duplicate_group_weighting:
         all_weights = apply_near_duplicate_group_inverse_weighting(
             all_weights, scenario_records
         )
@@ -874,6 +907,31 @@ def distributed_curriculum_sampler_init(
             demonstration_type: int(math.floor(num_samples * min(1.0, max(0.0, cap))))
             for demonstration_type, cap in absolute_caps.items()
         }
+    if sampler_mode == "exact_bucket_quota":
+        bucket_sizes = [len(dataset._scenarios) for dataset in scenario_datasets]
+        sampler = ExactBucketQuotaSampler(
+            bucket_sizes=bucket_sizes,
+            target_proportions=normalized_weights,
+            max_repeat_per_scenario=max_repeat_per_scenario,
+            random_seed=random_seed,
+            sampling_log_path=sampling_log_path,
+            score_method=score_method,
+            phase_name=phase_name,
+            phase_start_epoch=phase_start_epoch,
+            scenario_records=scenario_records,
+            max_repeat_per_group=max_repeat_per_near_duplicate_group,
+            cumulative_exposure_state_path=cumulative_exposure_state_path,
+            max_cumulative_exposure_per_scenario=max_cumulative_exposure_per_scenario,
+            max_cumulative_exposure_per_group=max_cumulative_exposure_per_near_duplicate_group,
+            batch_size=batch_size,
+            accumulate_grad_batches=accumulate_grad_batches,
+            pacing_schedule=pacing_schedule,
+            type_routing_weights=all_weights if type_mode == "enabled" else None,
+            max_exposure_per_demonstration_type=type_draw_caps,
+            type_routing_strength=routing_strength,
+        )
+        return DistributedSamplerWrapper(sampler)
+
     if max_repeat_per_near_duplicate_group > 0:
         sampler = ExposureCappedWeightedSampler(
             weights=all_weights,
