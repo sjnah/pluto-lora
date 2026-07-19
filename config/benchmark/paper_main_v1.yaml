@@ -2,7 +2,7 @@ suite_id: paper_main_v1
 training_protocol: config/training_protocol/flat_area_matched_v1.yaml
 
 workflow:
-  mode: train_and_evaluate # train_and_evaluate | train_only | evaluate_only
+  mode: evaluate_only # train_and_evaluate | train_only | evaluate_only
   continue_on_failure: false
   dry_run: false
 
@@ -15,9 +15,10 @@ selection:
     # - loss_exact
     # - mpoc_exact
     - llm_exact_off
+    - llm_exact_on
     - llm_capped_off
-    # - llm_capped_on
-  seeds: [1] # [1,2,3,4,5]
+    - llm_capped_on
+  seeds: [1,2,3,4,5,6] # [1,2,3,4,5]
   benchmarks:
     # - val14
     # - val14-fast
@@ -32,7 +33,9 @@ training:
   retrain_tag: null
 
 evaluation:
+  use_ema_checkpoint: false # false: merged_final.ckpt, true: merged_final_ema.ckpt
   require_completed_checkpoint: true
+  skip_completed_same_version_seed: true
   disable_simulation_log: true
   collect_results: true
 
@@ -105,18 +108,29 @@ arms:
     kind: trainable
     label: LLM exact (type-off)
     method: llm
-    artifact_version: v5.0.4.0.19
+    artifact_version: v5.0.4.0.20
     method_config: config/curriculum_method/llm_exact_off.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
     experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
     evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
 
+  llm_exact_on:
+    kind: trainable
+    label: LLM exact (type-on, shrunk)
+    method: llm
+    artifact_version: v5.0.4.0.20
+    method_config: config/curriculum_method/llm_exact_on.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "on"
+    experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_exact_on_seed{seed}
+    evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_exact_on_seed{seed}
+
   llm_capped_off:
     kind: trainable
     label: LLM capped weighted (type-off)
     method: llm
-    artifact_version: v5.0.4.0.19
+    artifact_version: v5.0.4.0.20
     method_config: config/curriculum_method/llm_capped.yaml
     sampler_contract: capped_weighted
     routing_mode: "off"
@@ -127,7 +141,7 @@ arms:
     kind: trainable
     label: LLM capped weighted (type-on)
     method: llm
-    artifact_version: v5.0.4.0.19
+    artifact_version: v5.0.4.0.20
     method_config: config/curriculum_method/llm_capped.yaml
     sampler_contract: capped_weighted
     routing_mode: "on"

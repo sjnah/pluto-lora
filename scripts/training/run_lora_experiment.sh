@@ -134,6 +134,7 @@ MAX_CUMULATIVE_EXPOSURE_PER_NEAR_DUPLICATE_GROUP="$CFG_MAX_CUMULATIVE_EXPOSURE_P
 
 TYPE_ROUTING_MODE="${TYPE_ROUTING_MODE:-$CFG_TYPE_ROUTING_DEFAULT_MODE}"
 TYPE_ROUTING_METADATA_PATH="${TYPE_ROUTING_METADATA_PATH:-$CFG_TYPE_ROUTING_METADATA_PATH}"
+TYPE_ROUTING_STRENGTH="$CFG_TYPE_ROUTING_STRENGTH"
 TYPE_ROUTING_METADATA_SHA256=""
 if [ "$CFG_TYPE_ROUTING_SUPPORTED" = "true" ]; then
     case "$TYPE_ROUTING_MODE" in
@@ -434,6 +435,7 @@ run_phase() {
         "curriculum.demonstration_type_mode=$DEMONSTRATION_TYPE_MODE" \
         "curriculum.demonstration_type_metadata_path=$DEMONSTRATION_TYPE_METADATA_PATH" \
         "curriculum.demonstration_type_policy.stage_role=$stage_role" \
+        "curriculum.demonstration_type_policy.multiplier_strength=$TYPE_ROUTING_STRENGTH" \
         "curriculum.max_repeat_per_near_duplicate_group=$MAX_REPEAT_PER_NEAR_DUPLICATE_GROUP" \
         "curriculum.near_duplicate_group_weighting=$NEAR_DUPLICATE_GROUP_WEIGHTING" \
         "curriculum.cumulative_exposure_state_path=$CUMULATIVE_EXPOSURE_STATE_PATH" \

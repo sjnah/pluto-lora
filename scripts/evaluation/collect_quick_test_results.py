@@ -7,6 +7,8 @@ Examples:
   python scripts/evaluation/collect_quick_test_results.py --tests test14-hard,interplan10
   python scripts/evaluation/collect_quick_test_results.py --tests val14 --methods zeroshot,rulebased,lossbased
   python scripts/evaluation/collect_quick_test_results.py --tests val14 --methods curriculum_llm_guided_v2
+  python scripts/evaluation/collect_quick_test_results.py --tests val14 --seed-view individual
+  python scripts/evaluation/collect_quick_test_results.py --tests val14 --seed-view both
   python scripts/evaluation/collect_quick_test_results.py --tests val14 --detail
   python scripts/evaluation/collect_quick_test_results.py --tests all --format csv --output artifacts/records/quick_test_summary.csv
 """
@@ -234,7 +236,8 @@ def compact_variant(rest: str | None) -> str | None:
     parts = rest.split("_")
     joined = "_".join(parts)
     marker_labels = {
-        "exact_off": "exact",
+        "exact_off": "exact_off",
+        "exact_on": "exact_on",
         "type_off": "capped_off",
         "type_on": "capped_on",
     }
@@ -247,6 +250,17 @@ def compact_variant(rest: str | None) -> str | None:
     return None
 
 
+def checkpoint_variant(method_key: str) -> str | None:
+    match = re.search(r"(?:^|_)(ema|standard)(?:_|$)", method_key.lower())
+    return match.group(1) if match is not None else None
+
+
+def seeded_base_method(match: re.Match[str]) -> str:
+    base = match.group("base")
+    trailing_variant = match.group("trailing_variant")
+    return f"{base}_{trailing_variant}" if trailing_variant else base
+
+
 def parse_method_label(method_key: str) -> ParsedMethodLabel | None:
     if method_key == "zeroshot":
         return ParsedMethodLabel("zero-shot", None, None, None)
@@ -255,7 +269,7 @@ def parse_method_label(method_key: str) -> ParsedMethodLabel | None:
     base_key = method_key
     seed_match = SEED_SUFFIX_RE.fullmatch(method_key)
     if seed_match is not None:
-        base_key = seed_match.group("base")
+        base_key = seeded_base_method(seed_match)
         seed = int(seed_match.group("seed"))
 
     direct_labels = {
@@ -308,7 +322,12 @@ def short_method_label(method_key: str) -> str | None:
         return None
     family = parsed.family
     variant = parsed.variant
-    if parsed.family == "llm" and parsed.variant in {"exact", "capped_off", "capped_on"}:
+    if parsed.family == "llm" and parsed.variant in {
+        "exact_off",
+        "exact_on",
+        "capped_off",
+        "capped_on",
+    }:
         family = f"llm_{parsed.variant}"
         variant = None
     parts = [family]
@@ -316,6 +335,9 @@ def short_method_label(method_key: str) -> str | None:
         parts.append(parsed.version)
     if variant:
         parts.append(variant)
+    checkpoint_tag = checkpoint_variant(method_key)
+    if checkpoint_tag and checkpoint_tag not in (variant or "").split("_"):
+        parts.append(checkpoint_tag)
     if parsed.seed is not None:
         parts.append(f"seed{parsed.seed}")
     return " ".join(parts)
@@ -383,9 +405,10 @@ def method_sort_key(method_key: str) -> tuple[int, int, str]:
             "llm": 6,
         }
         llm_variant_order = {
-            "exact": 0,
-            "capped_off": 1,
-            "capped_on": 2,
+            "exact_off": 0,
+            "exact_on": 1,
+            "capped_off": 2,
+            "capped_on": 3,
             None: 9,
         }
         variant = (
@@ -952,7 +975,29 @@ def summarize_one(
     return row
 
 
-SEED_SUFFIX_RE = re.compile(r"^(?P<base>.+)_seed(?P<seed>[0-9]+)$")
+SEED_SUFFIX_RE = re.compile(
+    r"^(?P<base>.+)_seed(?P<seed>[0-9]+)(?:_(?P<trailing_variant>ema|standard))?$",
+    re.IGNORECASE,
+)
+
+
+def sort_summary_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    test_order = {key: index for index, key in enumerate(TEST_SPECS)}
+
+    def method_and_seed_key(row: dict[str, Any]) -> tuple[tuple[int, int, str], int]:
+        method = str(row.get("method"))
+        match = SEED_SUFFIX_RE.fullmatch(method)
+        if match is None:
+            return method_sort_key(method), -1
+        return method_sort_key(seeded_base_method(match)), int(match.group("seed"))
+
+    return sorted(
+        rows,
+        key=lambda row: (
+            test_order.get(str(row.get("test")), 999),
+            method_and_seed_key(row),
+        ),
+    )
 
 
 def aggregate_seeded_rows(rows: list[dict[str, Any]], include_detail: bool = False) -> list[dict[str, Any]]:
@@ -965,7 +1010,7 @@ def aggregate_seeded_rows(rows: list[dict[str, Any]], include_detail: bool = Fal
         if match is None:
             passthrough.append(row)
             continue
-        key = (str(row.get("test")), match.group("base"))
+        key = (str(row.get("test")), seeded_base_method(match))
         grouped.setdefault(key, []).append((int(match.group("seed")), row))
 
     aggregated: list[dict[str, Any]] = []
@@ -1033,12 +1078,29 @@ def aggregate_seeded_rows(rows: list[dict[str, Any]], include_detail: bool = Fal
                 aggregate[key] = metric_means.get(metric_name)
         aggregated.append(aggregate)
 
-    combined = passthrough + aggregated
-    test_order = {key: index for index, key in enumerate(TEST_SPECS)}
-    return sorted(
-        combined,
-        key=lambda row: (test_order.get(str(row.get("test")), 999), method_sort_key(str(row.get("method")))),
-    )
+    return sort_summary_rows(passthrough + aggregated)
+
+
+def apply_seed_view(
+    rows: list[dict[str, Any]],
+    seed_view: str,
+    include_detail: bool = False,
+) -> list[dict[str, Any]]:
+    """Select aggregate, individual, or combined presentation for seeded runs."""
+    if seed_view == "individual":
+        return sort_summary_rows(rows)
+
+    aggregated = aggregate_seeded_rows(rows, include_detail)
+    if seed_view == "aggregate":
+        return aggregated
+    if seed_view == "both":
+        individual_rows = [
+            seed_row
+            for row in aggregated
+            for seed_row in row.get("seed_runs", [])
+        ]
+        return sort_summary_rows(aggregated + individual_rows)
+    raise ValueError(f"Unknown seed view: {seed_view}")
 
 
 def format_float(value: Any) -> str:
@@ -1058,6 +1120,16 @@ def format_score(row: dict[str, Any]) -> str:
     return f"{score} +/- {format_float(seed_std)}"
 
 
+def format_seeds(row: dict[str, Any]) -> str:
+    seeds = row.get("seeds")
+    if seeds:
+        return ",".join(str(seed) for seed in seeds)
+    match = SEED_SUFFIX_RE.fullmatch(str(row.get("method", "")))
+    if match is not None:
+        return match.group("seed")
+    return "-"
+
+
 def style_score(value: str) -> str:
     """Highlight a displayed score without changing its underlying value."""
     if not sys.stdout.isatty() or value == "-":
@@ -1072,7 +1144,7 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
         ("status", "Status"),
         ("metric_type", "Metric"),
         ("simulation_type", "Simulation"),
-        ("seed_count", "Seeds"),
+        ("seeds", "Seeds"),
         ("scenario_count", "N"),
         ("score", "Score"),
         ("score_std", "Within-run Std"),
@@ -1090,6 +1162,8 @@ def print_table(rows: list[dict[str, Any]], include_detail: bool = False) -> Non
             value = row.get(key)
             if key == "score":
                 rendered[key] = format_score(row)
+            elif key == "seeds":
+                rendered[key] = format_seeds(row)
             elif key == "score_std" or key in detail_keys:
                 rendered[key] = format_float(value)
             elif value is None:
@@ -1202,6 +1276,15 @@ def main() -> int:
         action="store_true",
         help="Include the eight closed-loop component metric means in table/csv/json output.",
     )
+    parser.add_argument(
+        "--seed-view",
+        choices=["aggregate", "individual", "both"],
+        default="aggregate",
+        help=(
+            "How to display comparable _seedN runs: aggregate keeps the current mean +/- "
+            "sample-std row, individual keeps one row per seed, and both shows both views."
+        ),
+    )
     parser.add_argument("--include-missing", action="store_true", help="Show rows with no result directory.")
     parser.add_argument("--strict", action="store_true", help="Exit non-zero if any selected row is missing or invalid.")
     args = parser.parse_args()
@@ -1221,7 +1304,7 @@ def main() -> int:
             if args.include_missing or row["status"] != "missing":
                 rows.append(row)
 
-    rows = aggregate_seeded_rows(rows, args.detail)
+    rows = apply_seed_view(rows, args.seed_view, args.detail)
 
     if args.format == "json":
         text = json.dumps(rows, indent=2, sort_keys=True)
