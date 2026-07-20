@@ -7,7 +7,6 @@ without importing the full PLUTO/nuPlan training stack.
 from __future__ import annotations
 
 import hashlib
-import heapq
 import json
 import math
 import random
@@ -322,12 +321,13 @@ def build_type_routed_exact_bucket_quota_indices(
     epoch: int,
     shuffle_output: bool = True,
 ) -> Tuple[List[int], Dict[str, object]]:
-    """Keep exact bucket totals while routing exposure within each bucket.
+    """Apply type routing as a minimal delta from the exact-quota baseline.
 
-    Draws use weighted-fair priorities ``(draw_count + 1) / routing_weight``.
-    Equal weights remain coverage-first, while routing multipliers change only
-    which scenarios are repeated or omitted inside a bucket. Demonstration
-    types can therefore never alter the requested easy/medium/hard totals.
+    The exact sampler for the same seed/epoch is the common random plan. Type
+    routing only replaces the minimum number of within-bucket positions needed
+    to realize an integer exposure delta. Neutral weights therefore reproduce
+    the exact baseline byte-for-byte (unless an explicit type cap binds), and
+    buckets with no non-normal demonstration types remain untouched.
     """
 
     total_samples = int(sum(bucket_sizes))
@@ -356,7 +356,18 @@ def build_type_routed_exact_bucket_quota_indices(
     ):
         raise ValueError("routing_weights must be finite and non-negative")
 
-    requested_counts = largest_remainder_counts(total_samples, target_proportions)
+    baseline, baseline_metadata = build_exact_bucket_quota_indices(
+        bucket_sizes,
+        target_proportions,
+        max_repeat_per_scenario=max_repeat_per_scenario,
+        seed=seed,
+        epoch=epoch,
+        shuffle_output=shuffle_output,
+    )
+    requested_counts = [
+        int(baseline_metadata["requested_draws"][bucket_name])  # type: ignore[index]
+        for bucket_name in BUCKET_NAMES
+    ]
     offsets = [0]
     for size in bucket_sizes[:-1]:
         offsets.append(offsets[-1] + int(size))
@@ -365,79 +376,250 @@ def build_type_routed_exact_bucket_quota_indices(
         str(key): max(0, int(value))
         for key, value in (max_exposure_per_demonstration_type or {}).items()
     }
-    scenario_exposure: Counter[str] = Counter()
-    category_exposure: Counter[str] = Counter()
+    normalized_types = [
+        str(value or "normal").strip() or "normal"
+        for value in demonstration_types
+    ]
+    bucket_for_index: List[int] = [0] * total_samples
+    bucket_pool_indices: List[List[int]] = []
+    for bucket_idx, (offset, size) in enumerate(zip(offsets, bucket_sizes)):
+        indices = list(range(offset, offset + int(size)))
+        bucket_pool_indices.append(indices)
+        for index in indices:
+            bucket_for_index[index] = bucket_idx
+
+    baseline_index_exposure: Counter[int] = Counter(baseline)
+    baseline_bucket_type: List[Counter[str]] = [Counter() for _ in BUCKET_NAMES]
+    pool_bucket_type: List[Counter[str]] = [Counter() for _ in BUCKET_NAMES]
+    for index, count in baseline_index_exposure.items():
+        baseline_bucket_type[bucket_for_index[index]][normalized_types[index]] += count
+    for bucket_idx, indices in enumerate(bucket_pool_indices):
+        pool_bucket_type[bucket_idx].update(normalized_types[index] for index in indices)
+
+    raw_type_delta: Dict[str, Dict[str, float]] = {
+        bucket_name: {} for bucket_name in BUCKET_NAMES
+    }
+    rounded_type_delta: Dict[str, Dict[str, int]] = {
+        bucket_name: {} for bucket_name in BUCKET_NAMES
+    }
+    target_bucket_type: List[Counter[str]] = [Counter() for _ in BUCKET_NAMES]
+    rounding_seed = int(seed) + int(epoch) * 9176 + 71
+
+    def deterministic_signed_round(value: float, key: str) -> int:
+        if abs(value) < 1e-12:
+            return 0
+        sign = 1 if value > 0.0 else -1
+        magnitude = abs(value)
+        whole = int(math.floor(magnitude))
+        fraction = magnitude - whole
+        if stable_hash_fraction(key, rounding_seed) < fraction:
+            whole += 1
+        return sign * whole
+
+    for bucket_idx, (bucket_name, indices, requested) in enumerate(
+        zip(BUCKET_NAMES, bucket_pool_indices, requested_counts)
+    ):
+        target = Counter(baseline_bucket_type[bucket_idx])
+        weight_total = sum(float(routing_weights[index]) for index in indices)
+        if weight_total <= 0.0:
+            raise ValueError(f"Routing weights sum to zero in {bucket_name} bucket")
+
+        by_type_weight: Counter[str] = Counter()
+        for index in indices:
+            by_type_weight[normalized_types[index]] += float(routing_weights[index])
+
+        for demo_type, pool_count in sorted(pool_bucket_type[bucket_idx].items()):
+            if demo_type == "normal":
+                continue
+            weighted_share = by_type_weight[demo_type] / weight_total
+            neutral_share = pool_count / len(indices)
+            raw_delta = requested * (weighted_share - neutral_share)
+            rounded_delta = deterministic_signed_round(
+                raw_delta,
+                f"{bucket_name}:{demo_type}",
+            )
+            raw_type_delta[bucket_name][demo_type] = raw_delta
+            rounded_type_delta[bucket_name][demo_type] = rounded_delta
+            capacity = int(pool_count) * int(max_repeat_per_scenario)
+            target[demo_type] = min(
+                capacity,
+                max(0, int(target[demo_type]) + rounded_delta),
+            )
+
+        non_normal_target = sum(
+            count for demo_type, count in target.items() if demo_type != "normal"
+        )
+        if non_normal_target > requested:
+            raise ValueError(
+                f"Type-routing target exceeds exact quota for {bucket_name}: "
+                f"{non_normal_target} non-normal draws for {requested} positions"
+            )
+        target["normal"] = requested - non_normal_target
+        target_bucket_type[bucket_idx] = target
+
+    # Absolute type caps remain hard constraints. They are applied after the
+    # paired deltas, with normal examples absorbing any capped exposure.
+    for demo_type, cap in sorted(category_caps.items()):
+        current_target = sum(target[demo_type] for target in target_bucket_type)
+        if demo_type == "normal":
+            if current_target > cap:
+                raise ValueError(
+                    "A normal demonstration-type cap cannot be satisfied by "
+                    "paired type routing"
+                )
+            continue
+        excess = max(0, current_target - cap)
+        while excess > 0:
+            candidates = [
+                bucket_idx
+                for bucket_idx, target in enumerate(target_bucket_type)
+                if target[demo_type] > 0
+            ]
+            if not candidates:
+                break
+            bucket_idx = min(
+                candidates,
+                key=lambda idx: (
+                    -target_bucket_type[idx][demo_type],
+                    stable_hash_fraction(
+                        f"cap:{demo_type}:{BUCKET_NAMES[idx]}", rounding_seed
+                    ),
+                ),
+            )
+            target_bucket_type[bucket_idx][demo_type] -= 1
+            target_bucket_type[bucket_idx]["normal"] += 1
+            excess -= 1
+
+    for bucket_idx, (bucket_name, requested) in enumerate(
+        zip(BUCKET_NAMES, requested_counts)
+    ):
+        target = target_bucket_type[bucket_idx]
+        if sum(target.values()) != requested:
+            raise AssertionError(f"Internal type target mismatch for {bucket_name}")
+        for demo_type, count in target.items():
+            capacity = pool_bucket_type[bucket_idx][demo_type] * max_repeat_per_scenario
+            if count > capacity:
+                raise ValueError(
+                    f"Type-routing constraints make exact quota impossible for {bucket_name}: "
+                    f"{demo_type} needs {count} draws but capacity is {capacity}."
+                )
+
+    selected = list(baseline)
+    current_index_exposure: Counter[int] = Counter(selected)
+    bucket_positions: List[List[int]] = [[] for _ in BUCKET_NAMES]
+    for position, index in enumerate(selected):
+        bucket_positions[bucket_for_index[index]].append(position)
+
+    swap_summary: Counter[str] = Counter()
+    tie_seed = int(seed) + int(epoch) * 9176 + 89
+    for bucket_idx, bucket_name in enumerate(BUCKET_NAMES):
+        current_type = Counter(baseline_bucket_type[bucket_idx])
+        target_type = target_bucket_type[bucket_idx]
+        surplus = Counter(
+            {
+                demo_type: current_type[demo_type] - target_type[demo_type]
+                for demo_type in set(current_type) | set(target_type)
+                if current_type[demo_type] > target_type[demo_type]
+            }
+        )
+        deficit = Counter(
+            {
+                demo_type: target_type[demo_type] - current_type[demo_type]
+                for demo_type in set(current_type) | set(target_type)
+                if target_type[demo_type] > current_type[demo_type]
+            }
+        )
+        if sum(surplus.values()) != sum(deficit.values()):
+            raise AssertionError(f"Internal routing balance mismatch for {bucket_name}")
+
+        while deficit:
+            receiver_type = min(
+                deficit,
+                key=lambda value: (
+                    -deficit[value],
+                    stable_hash_fraction(f"receiver-type:{bucket_name}:{value}", tie_seed),
+                ),
+            )
+            donor_type = min(
+                surplus,
+                key=lambda value: (
+                    -surplus[value],
+                    stable_hash_fraction(f"donor-type:{bucket_name}:{value}", tie_seed),
+                ),
+            )
+            donor_positions = [
+                position
+                for position in bucket_positions[bucket_idx]
+                if normalized_types[selected[position]] == donor_type
+            ]
+            donor_position = min(
+                donor_positions,
+                key=lambda position: (
+                    -current_index_exposure[selected[position]],
+                    stable_hash_fraction(
+                        f"donor:{scenario_ids[selected[position]]}:{position}", tie_seed
+                    ),
+                ),
+            )
+            receiver_candidates = [
+                index
+                for index in bucket_pool_indices[bucket_idx]
+                if normalized_types[index] == receiver_type
+                and current_index_exposure[index] < max_repeat_per_scenario
+            ]
+            if not receiver_candidates:
+                raise ValueError(
+                    f"Type-routing constraints make exact quota impossible for {bucket_name}: "
+                    f"no remaining {receiver_type} scenario capacity."
+                )
+            receiver_index = min(
+                receiver_candidates,
+                key=lambda index: (
+                    current_index_exposure[index],
+                    stable_hash_fraction(f"receiver:{scenario_ids[index]}", tie_seed),
+                ),
+            )
+            donor_index = selected[donor_position]
+            selected[donor_position] = receiver_index
+            current_index_exposure[donor_index] -= 1
+            current_index_exposure[receiver_index] += 1
+            current_type[donor_type] -= 1
+            current_type[receiver_type] += 1
+            surplus[donor_type] -= 1
+            deficit[receiver_type] -= 1
+            if surplus[donor_type] == 0:
+                del surplus[donor_type]
+            if deficit[receiver_type] == 0:
+                del deficit[receiver_type]
+            swap_summary[f"{bucket_name}:{donor_type}->{receiver_type}"] += 1
+
+    scenario_exposure: Counter[str] = Counter(
+        str(scenario_ids[index]) for index in selected
+    )
+    category_exposure: Counter[str] = Counter(
+        normalized_types[index] for index in selected
+    )
+    baseline_category_exposure: Counter[str] = Counter(
+        normalized_types[index] for index in baseline
+    )
     bucket_category_exposure: Dict[str, Counter[str]] = {
         bucket_name: Counter() for bucket_name in BUCKET_NAMES
     }
-    selected: List[int] = []
-    selected_per_bucket = [0, 0, 0]
-    heaps: List[List[Tuple[float, float, int]]] = []
-    tie_seed = int(seed) + int(epoch) * 9176 + 53
-    for bucket_idx, (offset, size) in enumerate(zip(offsets, bucket_sizes)):
-        heap: List[Tuple[float, float, int]] = []
-        for index in range(offset, offset + int(size)):
-            weight = float(routing_weights[index])
-            if weight <= 0.0:
-                continue
-            tie_break = stable_hash_fraction(str(scenario_ids[index]), tie_seed + bucket_idx)
-            heapq.heappush(heap, (1.0 / weight, tie_break, index))
-        heaps.append(heap)
+    baseline_bucket_category_exposure: Dict[str, Counter[str]] = {
+        bucket_name: Counter(baseline_bucket_type[idx])
+        for idx, bucket_name in enumerate(BUCKET_NAMES)
+    }
+    changed_by_bucket: Counter[str] = Counter()
+    for baseline_index, selected_index in zip(baseline, selected):
+        bucket_name = BUCKET_NAMES[bucket_for_index[baseline_index]]
+        bucket_category_exposure[bucket_name][normalized_types[selected_index]] += 1
+        if baseline_index != selected_index:
+            changed_by_bucket[bucket_name] += 1
 
-    while len(selected) < total_samples:
-        active_buckets = [
-            bucket_idx
-            for bucket_idx, requested in enumerate(requested_counts)
-            if selected_per_bucket[bucket_idx] < requested
-        ]
-        if not active_buckets:
-            break
-        bucket_idx = min(
-            active_buckets,
-            key=lambda idx: (
-                selected_per_bucket[idx] / max(1, requested_counts[idx]),
-                idx,
-            ),
-        )
-        heap = heaps[bucket_idx]
-        chosen: Tuple[float, float, int] | None = None
-        while heap:
-            candidate = heapq.heappop(heap)
-            index = candidate[2]
-            demo_type = str(demonstration_types[index] or "normal")
-            if (
-                demo_type in category_caps
-                and category_exposure[demo_type] >= category_caps[demo_type]
-            ):
-                continue
-            chosen = candidate
-            break
-        if chosen is None:
-            bucket_name = BUCKET_NAMES[bucket_idx]
-            raise ValueError(
-                f"Type-routing constraints make exact quota impossible for {bucket_name}: "
-                f"selected {selected_per_bucket[bucket_idx]} of "
-                f"{requested_counts[bucket_idx]} draws. Increase repeat/type caps or "
-                "revise the routing policy."
-            )
-
-        _, tie_break, index = chosen
-        scenario_id = str(scenario_ids[index])
-        demo_type = str(demonstration_types[index] or "normal")
-        selected.append(index)
-        selected_per_bucket[bucket_idx] += 1
-        scenario_exposure[scenario_id] += 1
-        category_exposure[demo_type] += 1
-        bucket_category_exposure[BUCKET_NAMES[bucket_idx]][demo_type] += 1
-        if scenario_exposure[scenario_id] < max_repeat_per_scenario:
-            next_priority = (
-                scenario_exposure[scenario_id] + 1
-            ) / float(routing_weights[index])
-            heapq.heappush(heap, (next_priority, tie_break, index))
-
-    if shuffle_output:
-        rng = random.Random(int(seed) + int(epoch) * 9176 + 17)
-        rng.shuffle(selected)
+    changed_count = sum(
+        baseline_index != selected_index
+        for baseline_index, selected_index in zip(baseline, selected)
+    )
 
     repeat_metadata: Dict[str, Dict[str, float | int]] = {}
     for bucket_idx, (bucket_name, offset, size, requested) in enumerate(
@@ -455,8 +637,8 @@ def build_type_routed_exact_bucket_quota_indices(
                 ),
                 "target_proportion": normalize_proportions(target_proportions)[bucket_idx],
                 "requested_draws": int(requested),
-                "actual_draws": int(selected_per_bucket[bucket_idx]),
-                "actual_proportion": selected_per_bucket[bucket_idx] / total_samples,
+                "actual_draws": int(len(bucket_draws)),
+                "actual_proportion": len(bucket_draws) / total_samples,
             }
         )
         repeat_metadata[bucket_name] = stats
@@ -464,7 +646,10 @@ def build_type_routed_exact_bucket_quota_indices(
     exposure_values = list(scenario_exposure.values())
     metadata: Dict[str, object] = {
         "sampler_mode": "exact_bucket_quota",
-        "type_routing_mode": "enabled_within_bucket",
+        "type_routing_mode": "paired_minimal_delta_within_bucket",
+        "routing_algorithm": "paired_minimal_delta_v1",
+        "type_delta_rounding": "deterministic_stochastic_v1",
+        "common_random_baseline": "exact_bucket_quota_same_seed_epoch",
         "epoch": int(epoch),
         "seed": int(seed),
         "total_samples": total_samples,
@@ -473,18 +658,51 @@ def build_type_routed_exact_bucket_quota_indices(
             zip(BUCKET_NAMES, normalize_proportions(target_proportions))
         ),
         "requested_draws": dict(zip(BUCKET_NAMES, requested_counts)),
-        "actual_draws": dict(zip(BUCKET_NAMES, selected_per_bucket)),
+        "actual_draws": dict(zip(BUCKET_NAMES, requested_counts)),
         "actual_proportions": {
-            bucket_name: selected_per_bucket[index] / total_samples
+            bucket_name: requested_counts[index] / total_samples
             for index, bucket_name in enumerate(BUCKET_NAMES)
         },
         "repeat_stats": repeat_metadata,
         "scenario_exposure": dict(scenario_exposure),
         "demonstration_type_exposure": dict(category_exposure),
+        "baseline_demonstration_type_exposure": dict(baseline_category_exposure),
         "bucket_demonstration_type_exposure": {
             bucket_name: dict(counts)
             for bucket_name, counts in bucket_category_exposure.items()
         },
+        "baseline_bucket_demonstration_type_exposure": {
+            bucket_name: dict(counts)
+            for bucket_name, counts in baseline_bucket_category_exposure.items()
+        },
+        "requested_type_delta_float": raw_type_delta,
+        "requested_type_delta_rounded": rounded_type_delta,
+        "applied_type_delta": {
+            bucket_name: {
+                demo_type: bucket_category_exposure[bucket_name][demo_type]
+                - baseline_bucket_category_exposure[bucket_name][demo_type]
+                for demo_type in sorted(
+                    set(bucket_category_exposure[bucket_name])
+                    | set(baseline_bucket_category_exposure[bucket_name])
+                )
+                if bucket_category_exposure[bucket_name][demo_type]
+                != baseline_bucket_category_exposure[bucket_name][demo_type]
+            }
+            for bucket_name in BUCKET_NAMES
+        },
+        "draws_changed_from_exact_baseline": int(changed_count),
+        "draws_changed_from_exact_baseline_by_bucket": {
+            bucket_name: int(changed_by_bucket[bucket_name])
+            for bucket_name in BUCKET_NAMES
+        },
+        "changed_draw_rate": changed_count / total_samples if total_samples else 0.0,
+        "routing_swap_summary": dict(swap_summary),
+        "exact_baseline_plan_sha256": hashlib.sha256(
+            json.dumps(baseline, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "routed_plan_sha256": hashlib.sha256(
+            json.dumps(selected, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
         "max_exposure_per_demonstration_type": category_caps,
         "unique_scenario_count": len(scenario_exposure),
         "max_scenario_exposure": max(exposure_values, default=0),

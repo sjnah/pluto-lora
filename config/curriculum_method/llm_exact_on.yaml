@@ -18,9 +18,10 @@ type_routing:
   default_mode: "on"
   metadata_path: ../llm-taxonomy/artifacts/rationales_ssg_text_v4_0_train_normalized.csv
   enabled_sampler_mode: exact_bucket_quota
-  multiplier_strength: 0.25
+  algorithm: paired_minimal_delta_v1
+  multiplier_strength: 1.0
 exposure:
-  # Matched with llm_exact_off: routing changes only within-bucket selection.
+  # Matched with llm_exact_off: routing minimally edits its seed/epoch plan.
   persistent: false
   near_duplicate_group_weighting: false
   max_repeat_per_near_duplicate_group: 0

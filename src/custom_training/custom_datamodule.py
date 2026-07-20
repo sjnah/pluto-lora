@@ -178,6 +178,7 @@ class ExactBucketQuotaSampler(torch.utils.data.Sampler[int]):
                     "exact_max_exposure_per_demonstration_type": (
                         self._exact_max_exposure_per_demonstration_type
                     ),
+                    "type_routing_algorithm": "paired_minimal_delta_v1",
                     "type_routing_strength": self._type_routing_strength,
                 }
             )

@@ -313,6 +313,15 @@ def validate_arm(
                 f"Type-on arm {arm_id} must keep its matched sampler contract "
                 f"({expected_routing_sampler})"
             )
+        if (
+            sampler_contract == "exact_bucket_quota"
+            and values["CFG_TYPE_ROUTING_ALGORITHM"]
+            != "paired_minimal_delta_v1"
+        ):
+            raise ConfigError(
+                f"Exact type-on arm {arm_id} must declare "
+                "type_routing.algorithm=paired_minimal_delta_v1"
+            )
     elif method != "llm" and values["CFG_TYPE_ROUTING_SUPPORTED"]:
         raise ConfigError(f"Non-LLM arm {arm_id} unexpectedly advertises type routing")
 
@@ -644,6 +653,7 @@ def checkpoint_config_matches(
     seed: int,
     protocol_id: str,
     protocol_sha256: str,
+    method_sha256: str,
     execution_mode: str,
 ) -> bool:
     try:
@@ -659,6 +669,7 @@ def checkpoint_config_matches(
             int(payload.get("seed")) == seed
             and str(lora.get("training_protocol_id", "")) == protocol_id
             and str(lora.get("training_protocol_sha256", "")) == protocol_sha256
+            and str(lora.get("curriculum_method_sha256", "")) == method_sha256
             and str(lora.get("execution_mode", "")) == execution_mode
         )
     except (OSError, TypeError, ValueError, yaml.YAMLError):
@@ -671,6 +682,7 @@ def discover_checkpoint(
     seed: int,
     protocol_id: str,
     protocol_sha256: str,
+    method_sha256: str,
     execution_mode: str,
     use_ema_checkpoint: bool = False,
 ) -> Optional[Path]:
@@ -684,6 +696,7 @@ def discover_checkpoint(
             seed=seed,
             protocol_id=protocol_id,
             protocol_sha256=protocol_sha256,
+            method_sha256=method_sha256,
             execution_mode=execution_mode,
         ):
             continue
@@ -782,6 +795,7 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
                 seed=seed,
                 protocol_id=protocol_id,
                 protocol_sha256=validated["protocol_sha256"],
+                method_sha256=arm.method_values["CFG_METHOD_SHA256"],
                 execution_mode=(
                     "continuous_uniform"
                     if arm.method_values["CFG_METHOD_MODE"] == "uniform"
@@ -971,6 +985,7 @@ def train_one(
         seed=int(run["seed"]),
         protocol_id=validated["protocol_id"],
         protocol_sha256=validated["protocol_sha256"],
+        method_sha256=arm.method_values["CFG_METHOD_SHA256"],
         execution_mode=(
             "continuous_uniform"
             if arm.method_values and arm.method_values["CFG_METHOD_MODE"] == "uniform"
