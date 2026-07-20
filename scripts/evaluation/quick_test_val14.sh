@@ -416,6 +416,9 @@ run_enabled_models() {
 source "${REPO_ROOT}/scripts/env_bootstrap.sh"
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/python_runtime.sh"
+# shellcheck disable=SC1091
+source "${REPO_ROOT}/scripts/evaluation/local_benchmark_data.sh"
+use_local_benchmark_data val14
 
 # Directory to save scenario token records
 SCENARIO_RECORDS_DIR="${REPO_ROOT}/artifacts/records/scenario_records"
