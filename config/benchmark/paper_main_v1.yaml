@@ -1,5 +1,8 @@
 suite_id: paper_main_v1
 training_protocol: config/training_protocol/flat_area_matched_v1.yaml
+# Optional immutable lineage manifest for LLM arms. Prefer the runner's
+# --artifact-bundle-manifest override when creating a new content-addressed bundle.
+artifact_bundle_manifest: null
 
 workflow:
   mode: train_and_evaluate # train_and_evaluate | train_only | evaluate_only
@@ -11,13 +14,12 @@ selection:
     # - zero_shot
     # - uniform
     # - random_exact
-    - rule_exact
-    - loss_exact
-    - mpoc_exact
-    - llm_exact_off
+    # - rule_exact
+    # - rule_raw_exact
+    # - loss_exact
+    # - mpoc_exact
+    # - llm_exact_off
     - llm_exact_on
-    # - llm_capped_off
-    # - llm_capped_on
   seeds: [1,2,3,4,5] # [1,2,3,4,5]
   benchmarks:
     # - val14
@@ -64,7 +66,7 @@ arms:
     kind: trainable
     label: RandomBucket exact
     method: random
-    artifact_version: v1.21
+    artifact_version: v1.22
     method_config: config/curriculum_method/random.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -75,18 +77,29 @@ arms:
     kind: trainable
     label: Rule-based exact
     method: rule
-    artifact_version: v3.21
+    artifact_version: v3.22
     method_config: config/curriculum_method/rule.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
     experiment_base_template: rule_{artifact_version}_{protocol_id}_seed{seed}
     evaluation_slug_template: rule_{artifact_version}_{protocol_id}_seed{seed}
 
+  rule_raw_exact:
+    kind: trainable
+    label: Rule-Raw exact
+    method: rule_raw
+    artifact_version: v1.0
+    method_config: config/curriculum_method/rule_raw.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: rule_raw_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: rule_raw_{artifact_version}_{protocol_id}_seed{seed}
+
   loss_exact:
     kind: trainable
     label: Loss-ranked exact
     method: loss
-    artifact_version: v1.21
+    artifact_version: v1.22
     method_config: config/curriculum_method/loss.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -97,7 +110,7 @@ arms:
     kind: trainable
     label: MPOC exact
     method: mpoc
-    artifact_version: v1.21
+    artifact_version: v1.22
     method_config: config/curriculum_method/mpoc.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -108,7 +121,7 @@ arms:
     kind: trainable
     label: LLM exact (type-off)
     method: llm
-    artifact_version: v5.0.4.0.21
+    artifact_version: v5.0.4.1.22
     method_config: config/curriculum_method/llm_exact_off.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -119,31 +132,9 @@ arms:
     kind: trainable
     label: LLM exact (type-on, paired minimal delta)
     method: llm
-    artifact_version: v5.0.4.1.21
+    artifact_version: v5.0.4.1.22
     method_config: config/curriculum_method/llm_exact_on.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "on"
     experiment_base_template: llm_guided_{artifact_version}-pmd1_{protocol_id}_exact_on_seed{seed}
     evaluation_slug_template: llm_guided_{artifact_version}-pmd1_{protocol_id}_exact_on_seed{seed}
-
-  llm_capped_off:
-    kind: trainable
-    label: LLM capped weighted (type-off)
-    method: llm
-    artifact_version: v5.0.4.0.20
-    method_config: config/curriculum_method/llm_capped.yaml
-    sampler_contract: capped_weighted
-    routing_mode: "off"
-    experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_type_off_seed{seed}
-    evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_type_off_seed{seed}
-
-  llm_capped_on:
-    kind: trainable
-    label: LLM capped weighted (type-on)
-    method: llm
-    artifact_version: v5.0.4.0.20
-    method_config: config/curriculum_method/llm_capped.yaml
-    sampler_contract: capped_weighted
-    routing_mode: "on"
-    experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_type_on_seed{seed}
-    evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_type_on_seed{seed}

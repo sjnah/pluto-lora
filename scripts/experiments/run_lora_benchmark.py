@@ -94,6 +94,115 @@ def canonical_digest(payload: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def bundle_identity_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": manifest["schema_version"],
+        "release_label": manifest["release_label"],
+        "split": manifest["split"],
+        "versions": manifest["versions"],
+        "model": manifest["model"],
+        "artifacts": {
+            role: {
+                key: value
+                for key, value in artifact.items()
+                if key != "source_path"
+            }
+            for role, artifact in sorted(manifest["artifacts"].items())
+        },
+        "contracts": manifest["contracts"],
+    }
+
+
+def validate_artifact_bundle(
+    value: object,
+    arms: dict[str, "ResolvedArm"],
+    selected_arms: list[str],
+) -> dict[str, Any] | None:
+    if value in (None, ""):
+        return None
+    path = resolve_path(value, label="artifact_bundle_manifest")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"Invalid artifact bundle manifest {path}: {exc}") from exc
+    if manifest.get("schema_version") != 1 or manifest.get("state") != "immutable":
+        raise ConfigError("Artifact bundle must use schema_version=1 and state=immutable")
+    computed_id = canonical_digest(bundle_identity_payload(manifest))
+    if manifest.get("bundle_id") != computed_id:
+        raise ConfigError(
+            "Artifact bundle identity mismatch: "
+            f"manifest={manifest.get('bundle_id')} computed={computed_id}"
+        )
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ConfigError("Artifact bundle has no artifacts mapping")
+    base = path.parent.resolve()
+    for role, artifact in artifacts.items():
+        if not isinstance(artifact, dict) or not artifact.get("path"):
+            raise ConfigError(f"Invalid bundled artifact entry: {role}")
+        artifact_path = (base / str(artifact["path"])).resolve()
+        try:
+            artifact_path.relative_to(base)
+        except ValueError as exc:
+            raise ConfigError(f"Bundled artifact escapes bundle directory: {role}") from exc
+        if not artifact_path.is_file():
+            raise ConfigError(f"Missing bundled artifact {role}: {artifact_path}")
+        actual = file_sha256(artifact_path)
+        if actual != artifact.get("sha256"):
+            raise ConfigError(
+                f"Bundled artifact drift for {role}: expected={artifact.get('sha256')} actual={actual}"
+            )
+
+    llm_arms = [arms[arm_id] for arm_id in selected_arms if arms[arm_id].method == "llm"]
+    if not llm_arms:
+        return {
+            "path": str(path),
+            "bundle_id": computed_id,
+            "manifest_sha256": file_sha256(path),
+            "release_label": str(manifest.get("release_label", "")),
+            "routing_metadata_path": None,
+        }
+    contracts = manifest.get("contracts") or {}
+    if contracts.get("filter_and_routing_share_source") is not True:
+        raise ConfigError("Artifact bundle does not bind filter and routing to one score source")
+    routing = artifacts.get("normalized_score")
+    if not isinstance(routing, dict):
+        raise ConfigError("Artifact bundle is missing normalized_score")
+    routing_path = (base / str(routing["path"])).resolve()
+    for arm in llm_arms:
+        assert arm.method_values is not None
+        prefix = str(arm.method_values["CFG_FILTER_PREFIX"])
+        for bucket, role in (
+            ("easy", "filter_easy"),
+            ("medium", "filter_medium"),
+            ("hard", "filter_hard"),
+            ("all", "filter_all"),
+        ):
+            bundled = artifacts.get(role)
+            if not isinstance(bundled, dict):
+                raise ConfigError(f"Artifact bundle is missing {role}")
+            active = PLUTO_ROOT / "config/scenario_filter" / f"{prefix}_train_{bucket}.yaml"
+            if not active.is_file() or file_sha256(active) != bundled.get("sha256"):
+                raise ConfigError(
+                    f"Active PLUTO filter does not match bundle for {arm.arm_id}/{bucket}: {active}"
+                )
+    return {
+        "path": str(path),
+        "bundle_id": computed_id,
+        "manifest_sha256": file_sha256(path),
+        "release_label": str(manifest.get("release_label", "")),
+        "routing_metadata_path": str(routing_path),
+    }
+
+
 def require_mapping(payload: dict[str, Any], key: str) -> dict[str, Any]:
     value = payload.get(key)
     if not isinstance(value, dict):
@@ -206,6 +315,8 @@ def apply_cli_overrides(payload: dict[str, Any], args: argparse.Namespace) -> di
         evaluation["skip_completed_same_version_seed"] = (
             args.skip_completed_evaluation
         )
+    if args.artifact_bundle_manifest:
+        resolved["artifact_bundle_manifest"] = args.artifact_bundle_manifest
     return resolved
 
 
@@ -549,6 +660,9 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     filter_contracts = validate_filter_contracts(
         resolved_arms, selected_arms, protocol_payload
     )
+    artifact_bundle = validate_artifact_bundle(
+        payload.get("artifact_bundle_manifest"), resolved_arms, selected_arms
+    )
 
     capped_pair = [resolved_arms.get("llm_capped_off"), resolved_arms.get("llm_capped_on")]
     if all(capped_pair):
@@ -632,6 +746,7 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
         "protocol_id": protocol_id,
         "protocol_sha256": protocol_sha256,
         "filter_contracts": filter_contracts,
+        "artifact_bundle": artifact_bundle,
         "arms": resolved_arms,
     }
 
@@ -655,6 +770,7 @@ def checkpoint_config_matches(
     protocol_sha256: str,
     method_sha256: str,
     execution_mode: str,
+    artifact_bundle_id: str = "",
 ) -> bool:
     try:
         hydra_config = experiment_dir.parents[1] / ".hydra/config.yaml"
@@ -665,13 +781,18 @@ def checkpoint_config_matches(
     try:
         payload = yaml.safe_load(hydra_config.read_text(encoding="utf-8")) or {}
         lora = payload.get("lora") or {}
-        return (
+        matches = (
             int(payload.get("seed")) == seed
             and str(lora.get("training_protocol_id", "")) == protocol_id
             and str(lora.get("training_protocol_sha256", "")) == protocol_sha256
             and str(lora.get("curriculum_method_sha256", "")) == method_sha256
             and str(lora.get("execution_mode", "")) == execution_mode
         )
+        if artifact_bundle_id:
+            matches = matches and str(
+                lora.get("curriculum_artifact_bundle_id", "")
+            ) == artifact_bundle_id
+        return matches
     except (OSError, TypeError, ValueError, yaml.YAMLError):
         return False
 
@@ -684,6 +805,7 @@ def discover_checkpoint(
     protocol_sha256: str,
     method_sha256: str,
     execution_mode: str,
+    artifact_bundle_id: str = "",
     use_ema_checkpoint: bool = False,
 ) -> Optional[Path]:
     output_root = PLUTO_ROOT / "outputs"
@@ -698,6 +820,7 @@ def discover_checkpoint(
             protocol_sha256=protocol_sha256,
             method_sha256=method_sha256,
             execution_mode=execution_mode,
+            artifact_bundle_id=artifact_bundle_id,
         ):
             continue
         candidates.extend(
@@ -801,6 +924,11 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
                     if arm.method_values["CFG_METHOD_MODE"] == "uniform"
                     else "staged_curriculum"
                 ),
+                artifact_bundle_id=(
+                    validated["artifact_bundle"]["bundle_id"]
+                    if arm.method == "llm" and validated.get("artifact_bundle")
+                    else ""
+                ),
                 use_ema_checkpoint=validated["use_ema_checkpoint"],
             )
             if validated["use_ema_checkpoint"]:
@@ -878,6 +1006,7 @@ def clean_experiment_environment() -> dict[str, str]:
         "RUN_",
         "LLM_CURRICULUM_",
         "RULE_CURRICULUM_",
+        "RULE_RAW_CURRICULUM_",
         "LOSS_CURRICULUM_",
         "RANDOM_BUCKET_CURRICULUM_",
         "MPOC_CURRICULUM_",
@@ -973,6 +1102,16 @@ def train_one(
     updates.update(stage_cuda_environment("training"))
     if arm.method == "llm":
         updates["TYPE_ROUTING_MODE"] = arm.routing_mode
+        bundle = validated.get("artifact_bundle")
+        if bundle:
+            updates["CURRICULUM_ARTIFACT_BUNDLE_ID"] = bundle["bundle_id"]
+            updates["CURRICULUM_ARTIFACT_BUNDLE_MANIFEST_SHA256"] = bundle[
+                "manifest_sha256"
+            ]
+            if arm.routing_mode == "on":
+                updates["TYPE_ROUTING_METADATA_PATH"] = bundle[
+                    "routing_metadata_path"
+                ]
     env.update(updates)
     command = ["bash", str(TRAINING_ADAPTER)]
     if validated["dry_run"]:
@@ -990,6 +1129,11 @@ def train_one(
             "continuous_uniform"
             if arm.method_values and arm.method_values["CFG_METHOD_MODE"] == "uniform"
             else "staged_curriculum"
+        ),
+        artifact_bundle_id=(
+            validated["artifact_bundle"]["bundle_id"]
+            if arm.method == "llm" and validated.get("artifact_bundle")
+            else ""
         ),
         use_ema_checkpoint=validated["use_ema_checkpoint"],
     )
@@ -1118,6 +1262,7 @@ def evaluation_method_environment(run: dict[str, Any]) -> dict[str, str]:
     updates = {
         "RUN_ZERO_SHOT": "false",
         "RUN_RULE_BASED": "false",
+        "RUN_RULE_RAW": "false",
         "RUN_LOSS_BASED": "false",
         "RUN_UNIFORM": "false",
         "RUN_RANDOM_BUCKET": "false",
@@ -1132,6 +1277,7 @@ def evaluation_method_environment(run: dict[str, Any]) -> dict[str, str]:
         return updates
     mapping = {
         "rule": ("RUN_RULE_BASED", "RULE"),
+        "rule_raw": ("RUN_RULE_RAW", "RULE_RAW"),
         "loss": ("RUN_LOSS_BASED", "LOSS"),
         "uniform": ("RUN_UNIFORM", "UNIFORM"),
         "random": ("RUN_RANDOM_BUCKET", "RANDOM_BUCKET"),
@@ -1241,6 +1387,7 @@ def manifest_payload(
             "sha256": validated["protocol_sha256"],
         },
         "filter_contracts": validated["filter_contracts"],
+        "artifact_bundle": validated.get("artifact_bundle"),
         "arms": arm_summaries,
         "runs": runs,
     }
@@ -1325,6 +1472,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--manifest", help="Optional resolved manifest output path")
+    parser.add_argument(
+        "--artifact-bundle-manifest",
+        help="Immutable LLM artifact bundle manifest; overrides the suite YAML",
+    )
     return parser
 
 

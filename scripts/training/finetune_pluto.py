@@ -238,6 +238,12 @@ def build_lora_training_engine(
         training_protocol_sha256=lora_config.get("training_protocol_sha256", ""),
         curriculum_method_id=lora_config.get("curriculum_method_id", ""),
         curriculum_method_sha256=lora_config.get("curriculum_method_sha256", ""),
+        curriculum_artifact_bundle_id=lora_config.get(
+            "curriculum_artifact_bundle_id", ""
+        ),
+        curriculum_artifact_bundle_manifest_sha256=lora_config.get(
+            "curriculum_artifact_bundle_manifest_sha256", ""
+        ),
         require_protocol_match_on_resume=lora_config.get(
             "require_protocol_match_on_resume", False
         ),

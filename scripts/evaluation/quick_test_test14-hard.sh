@@ -50,13 +50,14 @@ apply_cli_overrides() {
     for arg in "$@"; do
         case "$arg" in
             FILTER_NAME=*|EXPERIMENT_SUFFIX=*|TEST_LABEL=*|SCENARIO_BUILDER=*|COLLECT_TEST=*|\
-            RUN_ZERO_SHOT=*|RUN_RULE_BASED=*|RUN_LOSS_BASED=*|RUN_UNIFORM=*|RUN_RANDOM_BUCKET=*|RUN_LLM_CURRICULUM=*|RUN_MPOC=*|\
+            RUN_ZERO_SHOT=*|RUN_RULE_BASED=*|RUN_RULE_RAW=*|RUN_LOSS_BASED=*|RUN_UNIFORM=*|RUN_RANDOM_BUCKET=*|RUN_LLM_CURRICULUM=*|RUN_MPOC=*|\
             SCENARIOS_PER_STAGE=*|BATCH_SIZE=*|SIMULATION_TYPE=*|SIMULATION_VERBOSE=*|ENABLE_PROGRESS_BAR=*|\
             SIMULATION_WORKER=*|SIMULATION_WORKER_THREADS=*|SIMULATION_WORKER_MAX_WORKERS=*|SIMULATION_NUM_GPUS=*|SIMULATION_NUM_CPUS=*|SIMULATION_RAY_LOG_TO_DRIVER=*|\
             PLUTO_EVAL_ALLOW_WANDB=*|WANDB_DISABLED=*|PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=*|\
             LLM_CURRICULUM_VERSION=*|LLM_CURRICULUM_SLUG=*|LLM_CURRICULUM_EXP=*|\
             UNIFORM_CURRICULUM_VERSION=*|UNIFORM_CURRICULUM_SLUG=*|UNIFORM_CURRICULUM_EXP=*|\
             RULE_CURRICULUM_VERSION=*|RULE_CURRICULUM_SLUG=*|RULE_CURRICULUM_EXP=*|\
+            RULE_RAW_CURRICULUM_VERSION=*|RULE_RAW_CURRICULUM_SLUG=*|RULE_RAW_CURRICULUM_EXP=*|\
             LOSS_CURRICULUM_VERSION=*|LOSS_CURRICULUM_SLUG=*|LOSS_CURRICULUM_EXP=*|\
             RANDOM_BUCKET_CURRICULUM_VERSION=*|RANDOM_BUCKET_CURRICULUM_SLUG=*|RANDOM_BUCKET_CURRICULUM_EXP=*|\
             MPOC_CURRICULUM_VERSION=*|MPOC_CURRICULUM_SLUG=*|MPOC_CURRICULUM_EXP=*|\
@@ -92,6 +93,7 @@ SCENARIOS_PER_STAGE=${SCENARIOS_PER_STAGE:-auto}
 # Model selection flags. Set any flag to false/0/no to skip that model.
 RUN_ZERO_SHOT=${RUN_ZERO_SHOT:-false}
 RUN_RULE_BASED=${RUN_RULE_BASED:-false}
+RUN_RULE_RAW=${RUN_RULE_RAW:-false}
 RUN_LOSS_BASED=${RUN_LOSS_BASED:-false}
 RUN_UNIFORM=${RUN_UNIFORM:-false}
 RUN_RANDOM_BUCKET=${RUN_RANDOM_BUCKET:-false}
@@ -115,6 +117,15 @@ if [ -n "$RULE_CURRICULUM_VERSION" ]; then
 else
     RULE_CURRICULUM_SLUG=${RULE_CURRICULUM_SLUG:-rulebased}
     RULE_CURRICULUM_EXP=${RULE_CURRICULUM_EXP:-curriculum_lora_rulebased_stage3_high}
+fi
+
+RULE_RAW_CURRICULUM_VERSION=${RULE_RAW_CURRICULUM_VERSION:-}
+if [ -n "$RULE_RAW_CURRICULUM_VERSION" ]; then
+    RULE_RAW_CURRICULUM_SLUG=${RULE_RAW_CURRICULUM_SLUG:-curriculum_rule_raw_percentile_ehu_${RULE_RAW_CURRICULUM_VERSION}}
+    RULE_RAW_CURRICULUM_EXP=${RULE_RAW_CURRICULUM_EXP:-curriculum_lora_rule_raw_percentile_ehu_${RULE_RAW_CURRICULUM_VERSION}_${PERCENTILE_EHU_FINAL_PHASE}}
+else
+    RULE_RAW_CURRICULUM_SLUG=${RULE_RAW_CURRICULUM_SLUG:-rule_raw}
+    RULE_RAW_CURRICULUM_EXP=${RULE_RAW_CURRICULUM_EXP:-curriculum_lora_rule_raw_stage3_high}
 fi
 
 LOSS_CURRICULUM_VERSION=${LOSS_CURRICULUM_VERSION:-}
@@ -277,6 +288,7 @@ count_enabled_models() {
     local count=0
     is_enabled "$RUN_ZERO_SHOT" && count=$((count + 1))
     is_enabled "$RUN_RULE_BASED" && count=$((count + 1))
+    is_enabled "$RUN_RULE_RAW" && count=$((count + 1))
     is_enabled "$RUN_LOSS_BASED" && count=$((count + 1))
     is_enabled "$RUN_UNIFORM" && count=$((count + 1))
     is_enabled "$RUN_RANDOM_BUCKET" && count=$((count + 1))
@@ -402,6 +414,7 @@ run_enabled_models() {
 
     is_enabled "$RUN_ZERO_SHOT" && run_model_simulation "Zero-shot" "zeroshot" "$ZERO_SHOT_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_RULE_BASED" && run_model_simulation "Rule-based${RULE_CURRICULUM_VERSION:+ (${RULE_CURRICULUM_VERSION})}" "$RULE_CURRICULUM_SLUG" "$RULE_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
+    is_enabled "$RUN_RULE_RAW" && run_model_simulation "Rule-Raw${RULE_RAW_CURRICULUM_VERSION:+ (${RULE_RAW_CURRICULUM_VERSION})}" "$RULE_RAW_CURRICULUM_SLUG" "$RULE_RAW_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_LOSS_BASED" && run_model_simulation "Loss-based${LOSS_CURRICULUM_VERSION:+ (${LOSS_CURRICULUM_VERSION})}" "$LOSS_CURRICULUM_SLUG" "$LOSS_BASED_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_UNIFORM" && run_model_simulation "Uniform FT (${UNIFORM_CURRICULUM_VERSION})" "$UNIFORM_CURRICULUM_SLUG" "$UNIFORM_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
     is_enabled "$RUN_RANDOM_BUCKET" && run_model_simulation "RandomBucket-FT${RANDOM_BUCKET_CURRICULUM_VERSION:+ (${RANDOM_BUCKET_CURRICULUM_VERSION})}" "$RANDOM_BUCKET_CURRICULUM_SLUG" "$RANDOM_BUCKET_CKPT" "$filter" "$experiment_suffix" "$scenario_builder"
@@ -482,6 +495,7 @@ if is_enabled "$RUN_ZERO_SHOT"; then
 fi
 
 is_enabled "$RUN_RULE_BASED" && find_lora_checkpoint RULE_BASED_CKPT "Rule-based" "$RULE_CURRICULUM_EXP"
+is_enabled "$RUN_RULE_RAW" && find_lora_checkpoint RULE_RAW_CKPT "Rule-Raw" "$RULE_RAW_CURRICULUM_EXP"
 is_enabled "$RUN_LOSS_BASED" && find_lora_checkpoint LOSS_BASED_CKPT "Loss-based" "$LOSS_CURRICULUM_EXP"
 is_enabled "$RUN_UNIFORM" && find_lora_checkpoint UNIFORM_CKPT "Uniform FT" "$UNIFORM_CURRICULUM_EXP"
 is_enabled "$RUN_RANDOM_BUCKET" && find_lora_checkpoint RANDOM_BUCKET_CKPT "RandomBucket-FT" "$RANDOM_BUCKET_CURRICULUM_EXP"
@@ -491,6 +505,7 @@ is_enabled "$RUN_MPOC" && find_lora_checkpoint MPOC_CKPT "MPOC curriculum" "$MPO
 echo "📍 Using checkpoints:"
 is_enabled "$RUN_ZERO_SHOT" && echo "  Zero-shot:       $ZERO_SHOT_CKPT (PLUTO, no fine-tuning)"
 is_enabled "$RUN_RULE_BASED" && echo "  Rule-based:      $RULE_BASED_CKPT (PLUTO + rule-based curriculum LoRA, slug=${RULE_CURRICULUM_SLUG}, exp=${RULE_CURRICULUM_EXP})"
+is_enabled "$RUN_RULE_RAW" && echo "  Rule-Raw:        $RULE_RAW_CKPT (PLUTO + raw-rule curriculum LoRA, slug=${RULE_RAW_CURRICULUM_SLUG}, exp=${RULE_RAW_CURRICULUM_EXP})"
 is_enabled "$RUN_LOSS_BASED" && echo "  Loss-based:      $LOSS_BASED_CKPT (PLUTO + loss-ranked curriculum LoRA, slug=${LOSS_CURRICULUM_SLUG}, exp=${LOSS_CURRICULUM_EXP})"
 is_enabled "$RUN_UNIFORM" && echo "  Uniform FT:      $UNIFORM_CKPT (PLUTO + ${UNIFORM_CURRICULUM_VERSION} uniform FT LoRA, slug=${UNIFORM_CURRICULUM_SLUG})"
 is_enabled "$RUN_RANDOM_BUCKET" && echo "  RandomBucket-FT: $RANDOM_BUCKET_CKPT (PLUTO + random-bucket curriculum LoRA, slug=${RANDOM_BUCKET_CURRICULUM_SLUG}, exp=${RANDOM_BUCKET_CURRICULUM_EXP})"
@@ -534,6 +549,7 @@ echo "Collecting result summary..."
 COLLECT_METHOD_KEYS=()
 is_enabled "$RUN_ZERO_SHOT" && COLLECT_METHOD_KEYS+=("zeroshot")
 is_enabled "$RUN_RULE_BASED" && COLLECT_METHOD_KEYS+=("$RULE_CURRICULUM_SLUG")
+is_enabled "$RUN_RULE_RAW" && COLLECT_METHOD_KEYS+=("$RULE_RAW_CURRICULUM_SLUG")
 is_enabled "$RUN_LOSS_BASED" && COLLECT_METHOD_KEYS+=("$LOSS_CURRICULUM_SLUG")
 is_enabled "$RUN_UNIFORM" && COLLECT_METHOD_KEYS+=("$UNIFORM_CURRICULUM_SLUG")
 is_enabled "$RUN_RANDOM_BUCKET" && COLLECT_METHOD_KEYS+=("$RANDOM_BUCKET_CURRICULUM_SLUG")

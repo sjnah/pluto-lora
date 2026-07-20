@@ -25,6 +25,8 @@ training_protocol_id: ${oc.select:lora.training_protocol_id,""}
 training_protocol_sha256: ${oc.select:lora.training_protocol_sha256,""}
 curriculum_method_id: ${oc.select:lora.curriculum_method_id,""}
 curriculum_method_sha256: ${oc.select:lora.curriculum_method_sha256,""}
+curriculum_artifact_bundle_id: ${oc.select:lora.curriculum_artifact_bundle_id,""}
+curriculum_artifact_bundle_manifest_sha256: ${oc.select:lora.curriculum_artifact_bundle_manifest_sha256,""}
 require_protocol_match_on_resume: ${oc.select:lora.require_protocol_match_on_resume,false}
 
 # Stability controls

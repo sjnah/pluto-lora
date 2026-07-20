@@ -72,6 +72,8 @@ lora:
   training_protocol_sha256: ""
   curriculum_method_id: ""
   curriculum_method_sha256: ""
+  curriculum_artifact_bundle_id: ""
+  curriculum_artifact_bundle_manifest_sha256: ""
   require_protocol_match_on_resume: false
   save_merged: true
   use_collision_loss: true

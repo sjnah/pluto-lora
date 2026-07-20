@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash train.sh
-#   bash train.sh --mode train_only --arms rule_exact loss_exact
+#   bash train.sh --mode train_only --arms rule_raw_exact
 
 set -e
 

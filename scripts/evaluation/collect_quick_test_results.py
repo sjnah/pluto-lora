@@ -153,6 +153,7 @@ TEST_ALIASES = {
 METHOD_SPECS = {
     "zeroshot": MethodSpec("zeroshot", "Zero-shot"),
     "rulebased": MethodSpec("rulebased", "rule"),
+    "rule_raw": MethodSpec("rule_raw", "rule-raw"),
     "lossbased": MethodSpec("lossbased", "loss"),
     "curriculum_uniform": MethodSpec("curriculum_uniform", "uniform"),
     "curriculum_randombucket": MethodSpec("curriculum_randombucket", "random"),
@@ -166,6 +167,7 @@ DEFAULT_METHODS = [
     "curriculum_uniform",
     "curriculum_randombucket",
     "rulebased",
+    "rule_raw",
     "lossbased",
     "curriculum_mpoc",
     "curriculum_llm_guided_v2",
@@ -274,6 +276,7 @@ def parse_method_label(method_key: str) -> ParsedMethodLabel | None:
 
     direct_labels = {
         "rulebased": "rule",
+        "rule_raw": "rule-raw",
         "lossbased": "loss",
         "curriculum_uniform": "uniform",
         "curriculum_randombucket": "random",
@@ -290,16 +293,17 @@ def parse_method_label(method_key: str) -> ParsedMethodLabel | None:
         (r"curriculum_llm_guided_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "llm"),
         (r"llm_guided_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "llm"),
         (
-            r"curriculum_(?P<family>rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_(?P<payload>v[0-9][A-Za-z0-9._-]*)",
+            r"curriculum_(?P<family>rule_raw|rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_(?P<payload>v[0-9][A-Za-z0-9._-]*)",
             None,
         ),
         (
-            r"(?P<family>rule|loss|random|mpoc)_(?P<payload>v[0-9][A-Za-z0-9._-]*)",
+            r"(?P<family>rule_raw|rule|loss|random|mpoc)_(?P<payload>v[0-9][A-Za-z0-9._-]*)",
             None,
         ),
     ]
     family_labels = {
         "rule": "rule",
+        "rule_raw": "rule-raw",
         "loss": "loss",
         "randombucket": "random",
         "random": "random",
@@ -358,7 +362,7 @@ def is_uniform_version_method(method_key: str) -> bool:
 def is_percentile_ehu_version_method(method_key: str) -> bool:
     return (
         re.fullmatch(
-            r"curriculum_(rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_v[0-9][A-Za-z0-9._-]*",
+            r"curriculum_(rule_raw|rule|loss|randombucket|random|mpoc|llm)_percentile_ehu_v[0-9][A-Za-z0-9._-]*",
             method_key,
         )
         is not None
@@ -385,6 +389,7 @@ def method_sort_key(method_key: str) -> tuple[int, int, str]:
         "curriculum_uniform": (1, 0),
         "curriculum_randombucket": (2, 0),
         "rulebased": (3, 0),
+        "rule_raw": (3, 2),
         "lossbased": (4, 0),
         "curriculum_mpoc": (5, 0),
         "curriculum_llm_guided_v2": (6, 9),
@@ -400,6 +405,7 @@ def method_sort_key(method_key: str) -> tuple[int, int, str]:
             "uniform": 1,
             "random": 2,
             "rule": 3,
+            "rule-raw": 3,
             "loss": 4,
             "mpoc": 5,
             "llm": 6,
@@ -411,11 +417,12 @@ def method_sort_key(method_key: str) -> tuple[int, int, str]:
             "capped_on": 3,
             None: 9,
         }
-        variant = (
-            llm_variant_order.get(parsed.variant, 8)
-            if parsed.family == "llm"
-            else 1
-        )
+        if parsed.family == "llm":
+            variant = llm_variant_order.get(parsed.variant, 8)
+        elif parsed.family == "rule-raw":
+            variant = 2
+        else:
+            variant = 1
         return family_order.get(parsed.family, 99), variant, method_key
     if is_uniform_version_method(method_key):
         return 1, 1, method_key

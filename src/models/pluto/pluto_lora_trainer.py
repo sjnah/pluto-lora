@@ -82,6 +82,8 @@ class PLUTOLoRATrainer(LightningTrainer):
         training_protocol_sha256: str = "",
         curriculum_method_id: str = "",
         curriculum_method_sha256: str = "",
+        curriculum_artifact_bundle_id: str = "",
+        curriculum_artifact_bundle_manifest_sha256: str = "",
         require_protocol_match_on_resume: bool = False,
         # Training stability
         gradient_clip_val: float = 1.0,
@@ -163,6 +165,10 @@ class PLUTOLoRATrainer(LightningTrainer):
         self.training_protocol_sha256 = str(training_protocol_sha256 or "")
         self.curriculum_method_id = str(curriculum_method_id or "")
         self.curriculum_method_sha256 = str(curriculum_method_sha256 or "")
+        self.curriculum_artifact_bundle_id = str(curriculum_artifact_bundle_id or "")
+        self.curriculum_artifact_bundle_manifest_sha256 = str(
+            curriculum_artifact_bundle_manifest_sha256 or ""
+        )
         self.require_protocol_match_on_resume = bool(
             require_protocol_match_on_resume
         )
@@ -683,6 +689,10 @@ class PLUTOLoRATrainer(LightningTrainer):
             "protocol_sha256": self.training_protocol_sha256,
             "method_id": self.curriculum_method_id,
             "method_sha256": self.curriculum_method_sha256,
+            "artifact_bundle_id": getattr(self, "curriculum_artifact_bundle_id", ""),
+            "artifact_bundle_manifest_sha256": getattr(
+                self, "curriculum_artifact_bundle_manifest_sha256", ""
+            ),
             "scheduler_type": self.scheduler_type,
             "scheduler_horizon_epochs": self.scheduler_horizon_epochs,
         }
@@ -702,11 +712,18 @@ class PLUTOLoRATrainer(LightningTrainer):
             "protocol_sha256": getattr(self, "training_protocol_sha256", ""),
             "method_id": getattr(self, "curriculum_method_id", ""),
             "method_sha256": getattr(self, "curriculum_method_sha256", ""),
+            "artifact_bundle_id": getattr(self, "curriculum_artifact_bundle_id", ""),
+            "artifact_bundle_manifest_sha256": getattr(
+                self, "curriculum_artifact_bundle_manifest_sha256", ""
+            ),
             "scheduler_type": getattr(self, "scheduler_type", ""),
             "scheduler_horizon_epochs": getattr(
                 self, "scheduler_horizon_epochs", None
             ),
         }
+        if not expected["artifact_bundle_id"]:
+            expected.pop("artifact_bundle_id")
+            expected.pop("artifact_bundle_manifest_sha256")
         mismatches = {
             key: {"checkpoint": actual.get(key), "current": value}
             for key, value in expected.items()
