@@ -348,6 +348,10 @@ run_model_simulation() {
     echo ""
     echo "Running ${label} on ${filter}..."
     mkdir -p "$lock_root"
+    # Preserve the NFS write group even when a quick test is launched through
+    # a root docker exec.  A later non-root run must be able to remove its
+    # stale lock after a crash or container recreation.
+    chmod 2775 "$lock_root" 2>/dev/null || true
     if [ -f "${lock_dir}/pid" ]; then
         local existing_pid
         existing_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
@@ -364,13 +368,14 @@ run_model_simulation() {
             rm -rf "$lock_dir"
         fi
     fi
-    if ! mkdir "$lock_dir" 2>/dev/null; then
+    if ! (umask 0002; mkdir "$lock_dir") 2>/dev/null; then
         echo "Error: ${experiment} appears to be running already."
         echo "   Lock directory: ${lock_dir}"
         echo "   Running the same quick-test experiment concurrently can corrupt metrics."
         exit 1
     fi
-    echo "$$" > "${lock_dir}/pid"
+    chmod 2775 "$lock_dir" 2>/dev/null || true
+    (umask 0002; echo "$$" > "${lock_dir}/pid")
     ACTIVE_QUICK_TEST_LOCK="$lock_dir"
 
     set +e
