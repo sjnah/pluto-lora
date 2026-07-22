@@ -20,14 +20,15 @@ BUCKET_NAMES = ("easy", "medium", "hard")
 
 
 def validate_demonstration_type_routing(mode: str, curriculum_method: str) -> str:
-    """Validate the LLM-v4-only routing guard and return normalized mode."""
+    """Validate the versioned LLM-only routing guard and return normalized mode."""
 
     normalized = str(mode or "observe_only").strip().lower()
     if normalized not in {"observe_only", "enabled"}:
         raise ValueError(f"Unsupported demonstration_type_mode: {normalized}")
-    if normalized == "enabled" and str(curriculum_method) != "llm_guided_v4":
+    supported_llm_methods = {"llm_guided_v4", "llm_guided_v5"}
+    if normalized == "enabled" and str(curriculum_method) not in supported_llm_methods:
         raise ValueError(
-            "Demonstration-type routing is guarded to curriculum_method=llm_guided_v4"
+            "Demonstration-type routing is guarded to versioned llm_guided methods"
         )
     return normalized
 

@@ -31,7 +31,7 @@ phases:
     c: 12
   bucket_target_proportions:
     # Phase A: short easy warm-up before the hard-focused ramp.
-    a: [0.70, 0.20, 0.10]
+    a: [0.333333333333, 0.333333333333, 0.333333333334]
     # Phase B is overridden per epoch by phases.pacing.phase_alpha.b.
     # This static value is the final alpha=0.8 target and acts as fallback.
     b: [0.066666666667, 0.066666666667, 0.866666666666]
@@ -46,7 +46,7 @@ phases:
         alpha_end: 0.8
         ramp_epochs: 8
         uniform_prior: [0.333333333333, 0.333333333333, 0.333333333334]
-        hard_prior: [0.0, 1.0, 0.0]
+        hard_prior: [0.0, 0.0, 1.0]
 
 lora:
   enabled: true

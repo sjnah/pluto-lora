@@ -3,7 +3,7 @@ label: LLM-guided exact (type-on)
 mode: bucketed
 filter_prefix: llm_percentile_ehu
 score_method: llm
-curriculum_method: llm_guided_v4
+curriculum_method: llm_guided_v5
 sampler_mode: exact_bucket_quota
 max_repeat_per_scenario: 4
 hard_subtype_balance: false
@@ -18,7 +18,7 @@ phase_names:
 type_routing:
   supported: true
   default_mode: "on"
-  metadata_path: ../llm-taxonomy/artifacts/rationales_ssg_text_v4_0_train_normalized.csv
+  metadata_path: ../llm-taxonomy/artifacts/rationales_ssg_text_v5_0_train_normalized.csv
   enabled_sampler_mode: exact_bucket_quota
   algorithm: paired_minimal_delta_v1
   multiplier_strength: 0.25

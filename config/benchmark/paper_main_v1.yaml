@@ -18,7 +18,8 @@ selection:
     # - loss_exact
     # - mpoc_exact
     - llm_exact_off
-    # - llm_exact_on
+    # - llm_consensus_swap_ablation
+    - llm_exact_on
   seeds: [1,2,3,4,5] # [1,2,3,4,5]
   benchmarks:
     - interplan10
@@ -122,18 +123,31 @@ arms:
     kind: trainable
     label: LLM exact (type-off)
     method: llm
-    artifact_version: v5.0.4.1.25.4
+    artifact_version: v5.0.5.0.25.3
     method_config: config/curriculum_method/llm_exact_off.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
     experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
     evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
 
+  # Raw-aware hard-set swap ablation. The optimizer, phase schedule, exact
+  # sampler, and total bucket cardinalities remain matched to llm_exact_off.
+  llm_consensus_swap_ablation:
+    kind: trainable
+    label: LLM raw-aware consensus-swap exact
+    method: llm
+    artifact_version: v5.0.4.1.25.4-cswap1
+    method_config: config/curriculum_method/llm_consensus_swap.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: llm_consensus_swap_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: llm_consensus_swap_{artifact_version}_{protocol_id}_seed{seed}
+
   llm_exact_on:
     kind: trainable
     label: LLM exact (type-on, paired minimal delta)
     method: llm
-    artifact_version: v5.0.4.1.25.4
+    artifact_version: v5.0.5.0.25.3
     method_config: config/curriculum_method/llm_exact_on.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "on"
