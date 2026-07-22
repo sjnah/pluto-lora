@@ -114,6 +114,18 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
     exposure = method.get("exposure") or {}
     if not isinstance(exposure, dict):
         raise ValueError("method exposure must be a mapping")
+    cardinality_contract = str(method.get("bucket_cardinality_contract", "none"))
+    master_filter = str(method.get("bucket_master_filter", ""))
+    if cardinality_contract not in {"none", "equal_cardinality_quantile"}:
+        raise ValueError(
+            f"Unsupported bucket_cardinality_contract: {cardinality_contract}"
+        )
+    if cardinality_contract != "none" and not master_filter:
+        raise ValueError(
+            "bucket_master_filter is required for a bucket cardinality contract"
+        )
+    if master_filter:
+        master_filter = require_id(master_filter, "bucket_master_filter")
 
     epoch_a = int(cumulative["a"])
     epoch_b = int(cumulative["b"])
@@ -123,6 +135,18 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
     reset_boundaries = optimizer.get("reset_boundaries") or []
     if not isinstance(reset_boundaries, list):
         raise ValueError("optimizer.reset_boundaries must be a list")
+    scheduler_type = require_id(schedule.get("type"), "schedule.type")
+    scheduler_total_steps = int(schedule["total_steps"])
+    scheduler_warmup_steps = int(schedule["warmup_steps"])
+    scheduler_min_lr = float(schedule["min_lr"])
+    if scheduler_total_steps <= 0:
+        raise ValueError("schedule.total_steps must be positive")
+    if not 0 <= scheduler_warmup_steps <= scheduler_total_steps:
+        raise ValueError(
+            "schedule.warmup_steps must be between zero and schedule.total_steps"
+        )
+    if scheduler_min_lr < 0:
+        raise ValueError("schedule.min_lr must be non-negative")
 
     persistent = bool(exposure.get("persistent", False))
     max_scenario = int(exposure.get("max_cumulative_exposure_per_scenario", 0))
@@ -150,9 +174,11 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_PROTOCOL_PATH": str(protocol_file),
         "CFG_PROTOCOL_ID": protocol_id,
         "CFG_PROTOCOL_SHA256": digest(protocol),
-        "CFG_SCHEDULER_TYPE": require_id(schedule.get("type"), "schedule.type"),
+        "CFG_SCHEDULER_TYPE": scheduler_type,
         "CFG_SCHEDULER_HORIZON_EPOCHS": int(schedule["horizon_epochs"]),
-        "CFG_WARMUP_STEPS": int(schedule["warmup_steps"]),
+        "CFG_SCHEDULER_TOTAL_STEPS": scheduler_total_steps,
+        "CFG_SCHEDULER_MIN_LR": scheduler_min_lr,
+        "CFG_WARMUP_STEPS": scheduler_warmup_steps,
         "CFG_LORA_LR": float(schedule["lora_lr"]),
         "CFG_HEAD_LR": float(schedule["head_lr"]),
         "CFG_WEIGHT_DECAY": float(optimizer["weight_decay"]),
@@ -209,6 +235,8 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_BUCKETIZATION_MODE": str(
             method.get("bucketization_mode", "percentile_tercile")
         ),
+        "CFG_BUCKET_CARDINALITY_CONTRACT": cardinality_contract,
+        "CFG_BUCKET_MASTER_FILTER": master_filter,
         "CFG_PHASE_A_NAME": str(phase_names["a"]),
         "CFG_PHASE_B_NAME": str(phase_names["b"]),
         "CFG_PHASE_C_NAME": str(phase_names["c"]),

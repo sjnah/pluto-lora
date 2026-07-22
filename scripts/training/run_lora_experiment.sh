@@ -10,7 +10,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 PLUTO_FILTER_DIR="${REPO_ROOT}/config/scenario_filter"
 CONFIG_RESOLVER="${SCRIPT_DIR}/resolve_lora_experiment_config.py"
+FILTER_VALIDATOR="${SCRIPT_DIR}/validate_curriculum_filters.py"
 export PLUTO_CONFIG_ROOT="${PLUTO_CONFIG_ROOT:-${REPO_ROOT}/config}"
+# Separate Hydra metadata even when independent canonical runners start at the
+# same instant. The timestamp still distinguishes this runner's three phases.
+export PLUTO_TRAINING_RUN_SUFFIX="${PLUTO_TRAINING_RUN_SUFFIX:-$$}"
 
 # shellcheck disable=SC1091
 source "${REPO_ROOT}/scripts/python_runtime.sh"
@@ -67,6 +71,8 @@ EPOCHS_PHASE_B="$CFG_EPOCHS_PHASE_B"
 EPOCHS_PHASE_C="$CFG_EPOCHS_PHASE_C"
 WARMUP_STEPS="$CFG_WARMUP_STEPS"
 SCHEDULER_TYPE="$CFG_SCHEDULER_TYPE"
+SCHEDULER_TOTAL_STEPS="$CFG_SCHEDULER_TOTAL_STEPS"
+SCHEDULER_MIN_LR="$CFG_SCHEDULER_MIN_LR"
 RESET_OPTIMIZER_MOMENTS_AT_PHASE_B="$CFG_RESET_AT_PHASE_B"
 GRADIENT_CLIP_VAL="$CFG_GRADIENT_CLIP_VAL"
 SKIP_NAN_STEPS="$CFG_SKIP_NAN_STEPS"
@@ -114,7 +120,7 @@ else
     default_base="curriculum_lora_${METHOD}_percentile_ehu_${CURRICULUM_VERSION}_${PROTOCOL_ID}"
 fi
 CURRICULUM_BASE_EXP="${CURRICULUM_BASE_EXP:-$default_base}"
-PROTOCOL_SNAPSHOT_PATH="${REPO_ROOT}/artifacts/training_protocols/${CURRICULUM_BASE_EXP}.json"
+PROTOCOL_SNAPSHOT_PATH="${REPO_ROOT}/artifacts/training_protocols/${CURRICULUM_BASE_EXP}.${PROTOCOL_SHA256:0:12}.${METHOD_SHA256:0:12}.json"
 
 FILTER_PREFIX="${FILTER_PREFIX:-$CFG_FILTER_PREFIX}"
 SCENARIO_FILTER_UNIFORM="$CFG_SCENARIO_FILTER_UNIFORM"
@@ -124,6 +130,8 @@ SCENARIO_FILTER_HARD="${FILTER_PREFIX}_train_hard"
 CURRICULUM_SPLITS="[$SCENARIO_FILTER_EASY,$SCENARIO_FILTER_MEDIUM,$SCENARIO_FILTER_HARD]"
 
 BUCKETIZATION_MODE="$CFG_BUCKETIZATION_MODE"
+BUCKET_CARDINALITY_CONTRACT="$CFG_BUCKET_CARDINALITY_CONTRACT"
+BUCKET_MASTER_FILTER="$CFG_BUCKET_MASTER_FILTER"
 TIE_BREAK_MODE="${TIE_BREAK_MODE:-$CFG_TIE_BREAK_MODE}"
 SAMPLER_MODE="${SAMPLER_MODE:-$CFG_SAMPLER_MODE}"
 MAX_REPEAT_PER_SCENARIO="$CFG_MAX_REPEAT_PER_SCENARIO"
@@ -224,6 +232,13 @@ ensure_method_filters() {
             exit 1
         fi
     done
+    if [ "$BUCKET_CARDINALITY_CONTRACT" != "none" ]; then
+        "$PYTHON_BIN" "$FILTER_VALIDATOR" \
+            --contract "$BUCKET_CARDINALITY_CONTRACT" \
+            --filter-dir "$PLUTO_FILTER_DIR" \
+            --filter-prefix "$FILTER_PREFIX" \
+            --master-filter "$BUCKET_MASTER_FILTER"
+    fi
 }
 
 find_latest_checkpoint() {
@@ -349,6 +364,8 @@ run_lora_train() {
         "lora.ultra_minimal=$ULTRA_MINIMAL"
         "lora.scheduler_type=$SCHEDULER_TYPE"
         "lora.scheduler_horizon_epochs=$EPOCHS_PHASE_C"
+        "lora.scheduler_total_steps=$SCHEDULER_TOTAL_STEPS"
+        "lora.scheduler_min_lr=$SCHEDULER_MIN_LR"
         "lora.reset_optimizer_moments_on_resume=$reset_optimizer_moments"
         "lora.training_protocol_id=$PROTOCOL_ID"
         "lora.training_protocol_sha256=$PROTOCOL_SHA256"
@@ -481,7 +498,7 @@ main() {
     echo "PLUTO LoRA: method=$METHOD, artifact=$CURRICULUM_VERSION"
     echo "Protocol: $PROTOCOL_ID ($PROTOCOL_SHA256)"
     echo "Method config: $CFG_METHOD_PATH ($METHOD_SHA256)"
-    echo "Scheduler: $SCHEDULER_TYPE, warmup=$WARMUP_STEPS, LoRA LR=$LORA_LR, head LR=$HEAD_LR"
+    echo "Scheduler: $SCHEDULER_TYPE, steps=$SCHEDULER_TOTAL_STEPS, warmup=$WARMUP_STEPS, min LR=$SCHEDULER_MIN_LR, LoRA LR=$LORA_LR, head LR=$HEAD_LR"
     if [ "$CFG_METHOD_MODE" = "uniform" ]; then
         echo "Execution: continuous Uniform FT for $EPOCHS_PHASE_C epochs"
         echo "Phase transitions: disabled; optimizer reset: disabled"

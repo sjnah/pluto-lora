@@ -5,54 +5,48 @@ runtime:
   # Bump only when the base PLUTO feature-builder/serialization contract changes.
   feature_cache_name: flat_lr_comparison_v1_pluto_feature_v1
 
-# One optimizer/scheduler trajectory is resumed across cumulative 2/6/12
-# Lightning boundaries. The LR-step integral matches the former 804-step
-# warmup-100 cosine schedule (LoRA peak 5e-5, terminal 1e-6).
+# One optimizer/scheduler trajectory is resumed across cumulative 2/10/12
+# Lightning boundaries. All methods use the same optimizer-step-indexed LR
+# trajectory so curriculum sample order is compared under an identical LR.
 schedule:
-  type: warmup_constant
+  type: warmup_cosine
   horizon_epochs: 12
-  warmup_steps: 32
-  lora_lr: 2.593849080532655e-5
-  head_lr: 5.18769816106531e-6
-  reference:
-    type: warmup_cosine
-    total_steps: 804
-    warmup_steps: 100
-    lora_peak_lr: 5.0e-5
-    lora_min_lr: 1.0e-6
-    lr_step_integral: 0.0204525
+  total_steps: 804
+  warmup_steps: 100
+  lora_lr: 5.0e-5
+  head_lr: 1.0e-5
+  min_lr: 1.0e-6
 
 optimizer:
-  # Staged curriculum methods reset Adam tensor moments at A -> B while
-  # preserving scheduler and Lightning loop state. Uniform FT has no phase
-  # transition and the canonical runner therefore ignores this reset boundary.
+  # Keep one AdamW state and one scheduler trajectory across staged phase
+  # boundaries. An empty list is deliberate: curriculum methods differ only in
+  # sample ordering/pacing, not optimizer resets.
   reset_boundaries:
-    - phase_a_to_b
   weight_decay: 0.05
 
 phases:
   cumulative_epochs:
     a: 2
-    b: 6
+    b: 10
     c: 12
   bucket_target_proportions:
     # Phase A: short easy warm-up before the hard-focused ramp.
     a: [0.70, 0.20, 0.10]
     # Phase B is overridden per epoch by phases.pacing.phase_alpha.b.
     # This static value is the final alpha=0.8 target and acts as fallback.
-    b: [0.133333333334, 0.133333333334, 0.733333333332]
+    b: [0.066666666667, 0.066666666667, 0.866666666666]
     # Phase C keeps 20% uniform replay and 80% hard-prior mass:
     # q=(1-alpha)U+alpha H, alpha=0.8, U=[1/3,1/3,1/3], H=[0,0,1].
-    c: [0.133333333334, 0.133333333334, 0.733333333332]
+    c: [0.066666666667, 0.066666666667, 0.866666666666]
   pacing:
     phase_alpha:
       b:
         type: hard_replay_ramp
         alpha_start: 0.0
         alpha_end: 0.8
-        ramp_epochs: 4
+        ramp_epochs: 8
         uniform_prior: [0.333333333333, 0.333333333333, 0.333333333334]
-        hard_prior: [0.0, 0.0, 1.0]
+        hard_prior: [0.0, 1.0, 0.0]
 
 lora:
   enabled: true

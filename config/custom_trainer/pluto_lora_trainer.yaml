@@ -20,6 +20,8 @@ ultra_minimal: ${lora.ultra_minimal}
 is_curriculum_stage: ${oc.select:lora.is_curriculum_stage,false}
 reset_optimizer_moments_on_resume: ${oc.select:lora.reset_optimizer_moments_on_resume,false}
 scheduler_horizon_epochs: ${oc.select:lora.scheduler_horizon_epochs,null}
+scheduler_total_steps: ${oc.select:lora.scheduler_total_steps,null}
+scheduler_min_lr: ${oc.select:lora.scheduler_min_lr,1.0e-6}
 scheduler_type: ${oc.select:lora.scheduler_type,warmup_cosine}
 training_protocol_id: ${oc.select:lora.training_protocol_id,""}
 training_protocol_sha256: ${oc.select:lora.training_protocol_sha256,""}

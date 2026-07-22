@@ -18,7 +18,8 @@ import re
 import shlex
 import subprocess
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -50,6 +51,10 @@ from curriculum_sampling import (  # noqa: E402
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 WORKFLOW_MODES = {"train_and_evaluate", "train_only", "evaluate_only"}
 CHECKPOINT_POLICIES = {"reuse", "retrain", "error"}
+CHECKPOINT_LINEAGE_FILENAME = ".checkpoint_lineage.json"
+POST_TRAINING_DISCOVERY_ATTEMPTS = 30
+POST_TRAINING_DISCOVERY_DELAY_SECONDS = 1.0
+TRAINING_CONFIG_SNAPSHOT_ROOT = PLUTO_ROOT / "artifacts/benchmark_config_snapshots"
 RESUME_POLICIES = {"auto", "fresh", "require_resume"}
 SAMPLER_CONTRACTS = {"uniform", "exact_bucket_quota", "capped_weighted"}
 BENCHMARKS = {
@@ -100,6 +105,67 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def immutable_yaml_snapshot(
+    source_path: Path, *, expected_digest: str, category: str
+) -> Path:
+    """Create a content-addressed YAML snapshot and reject resolution races."""
+    raw = source_path.read_text(encoding="utf-8")
+    payload = yaml.safe_load(raw)
+    if not isinstance(payload, dict):
+        raise ConfigError(f"Expected a YAML mapping: {source_path}")
+    actual_digest = config_digest(payload)
+    if actual_digest != expected_digest:
+        raise ConfigError(
+            f"{category} config changed while the benchmark was starting: "
+            f"expected={expected_digest} actual={actual_digest} path={source_path}"
+        )
+
+    snapshot_dir = TRAINING_CONFIG_SNAPSHOT_ROOT / category
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = snapshot_dir / f"{source_path.stem}-{expected_digest}.yaml"
+    if snapshot_path.is_file():
+        _, snapshot_payload = resolver_load_yaml(str(snapshot_path))
+        snapshot_digest = config_digest(snapshot_payload)
+        if snapshot_digest != expected_digest:
+            raise ConfigError(
+                f"Immutable {category} snapshot has unexpected content: {snapshot_path}"
+            )
+        return snapshot_path.resolve()
+
+    temporary_path = snapshot_path.with_name(
+        f"{snapshot_path.name}.tmp.{os.getpid()}"
+    )
+    temporary_path.write_text(raw, encoding="utf-8")
+    temporary_path.replace(snapshot_path)
+    return snapshot_path.resolve()
+
+
+def freeze_training_configs(validated: dict[str, Any]) -> None:
+    """Pin long-running training to the configs validated at suite startup."""
+    if validated["mode"] == "evaluate_only":
+        return
+    protocol_path = immutable_yaml_snapshot(
+        validated["protocol_path"],
+        expected_digest=validated["protocol_sha256"],
+        category="training_protocol",
+    )
+    frozen_arms: dict[str, ResolvedArm] = {}
+    for arm_id, arm in validated["arms"].items():
+        if arm.kind != "trainable":
+            frozen_arms[arm_id] = arm
+            continue
+        assert arm.method_config is not None
+        assert arm.method_values is not None
+        method_path = immutable_yaml_snapshot(
+            arm.method_config,
+            expected_digest=arm.method_values["CFG_METHOD_SHA256"],
+            category="curriculum_method",
+        )
+        frozen_arms[arm_id] = replace(arm, method_config=method_path)
+    validated["protocol_path"] = protocol_path
+    validated["arms"] = frozen_arms
 
 
 def bundle_identity_payload(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -772,14 +838,18 @@ def checkpoint_config_matches(
     execution_mode: str,
     artifact_bundle_id: str = "",
 ) -> bool:
-    try:
-        hydra_config = experiment_dir.parents[1] / ".hydra/config.yaml"
-    except IndexError:
+    lineage_config = experiment_dir / CHECKPOINT_LINEAGE_FILENAME
+    if lineage_config.is_file():
+        config_path = lineage_config
+    else:
+        try:
+            config_path = experiment_dir.parents[1] / ".hydra/config.yaml"
+        except IndexError:
+            return False
+    if not config_path.is_file():
         return False
-    if not hydra_config.is_file():
-        return False
     try:
-        payload = yaml.safe_load(hydra_config.read_text(encoding="utf-8")) or {}
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         lora = payload.get("lora") or {}
         matches = (
             int(payload.get("seed")) == seed
@@ -835,6 +905,25 @@ def discover_checkpoint(
     return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
 
 
+def discover_checkpoint_with_retry(
+    final_experiment: str,
+    *,
+    attempts: int = POST_TRAINING_DISCOVERY_ATTEMPTS,
+    delay_seconds: float = POST_TRAINING_DISCOVERY_DELAY_SECONDS,
+    **discovery_kwargs: Any,
+) -> Optional[Path]:
+    """Retry post-training discovery while newly closed files become visible."""
+    if attempts < 1:
+        raise ValueError("checkpoint discovery attempts must be at least 1")
+    for attempt in range(attempts):
+        checkpoint = discover_checkpoint(final_experiment, **discovery_kwargs)
+        if checkpoint is not None:
+            return checkpoint
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    return None
+
+
 def has_partial_checkpoint(experiment_base: str) -> bool:
     output_root = PLUTO_ROOT / "outputs"
     if not output_root.is_dir():
@@ -844,6 +933,70 @@ def has_partial_checkpoint(experiment_base: str) -> bool:
         f"*/*/outputs/{experiment_base}_phaseB_*/checkpoints/last.ckpt",
     )
     return any(any(output_root.glob(pattern)) for pattern in patterns)
+
+
+def experiment_state_contract_status(
+    experiment_base: str,
+    arm: ResolvedArm,
+    *,
+    seed: int,
+    protocol_id: str,
+    protocol_sha256: str,
+    method_sha256: str,
+    artifact_bundle_id: str = "",
+) -> str:
+    """Return none, matching, or mismatch for state using an experiment base."""
+    found = False
+    snapshot_root = PLUTO_ROOT / "artifacts/training_protocols"
+    snapshot_paths = list(snapshot_root.glob(f"{experiment_base}.json"))
+    snapshot_paths.extend(snapshot_root.glob(f"{experiment_base}.*.json"))
+    for snapshot_path in snapshot_paths:
+        found = True
+        try:
+            payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "mismatch"
+        if (
+            str(payload.get("CFG_PROTOCOL_SHA256", "")) != protocol_sha256
+            or str(payload.get("CFG_METHOD_SHA256", "")) != method_sha256
+        ):
+            return "mismatch"
+
+    assert arm.method_values is not None
+    if arm.method_values["CFG_METHOD_MODE"] == "uniform":
+        experiment_names = [final_experiment_name(experiment_base, arm)]
+        execution_mode = "continuous_uniform"
+    else:
+        experiment_names = [
+            f"{experiment_base}_phaseA_{arm.method_values['CFG_PHASE_A_NAME']}",
+            f"{experiment_base}_phaseB_{arm.method_values['CFG_PHASE_B_NAME']}",
+            f"{experiment_base}_phaseC_{arm.method_values['CFG_PHASE_C_NAME']}",
+        ]
+        execution_mode = "staged_curriculum"
+
+    output_root = PLUTO_ROOT / "outputs"
+    for experiment_name in experiment_names:
+        for experiment_dir in output_root.glob(f"*/*/outputs/{experiment_name}"):
+            if not any(path.is_file() for path in checkpoint_candidates(experiment_dir)):
+                continue
+            found = True
+            if not checkpoint_config_matches(
+                experiment_dir,
+                seed=seed,
+                protocol_id=protocol_id,
+                protocol_sha256=protocol_sha256,
+                method_sha256=method_sha256,
+                execution_mode=execution_mode,
+                artifact_bundle_id=artifact_bundle_id,
+            ):
+                return "mismatch"
+    return "matching" if found else "none"
+
+
+def contract_isolation_suffix(
+    protocol_sha256: str, method_sha256: str
+) -> str:
+    return f"contract_{protocol_sha256[:12]}_{method_sha256[:12]}"
 
 
 def checkpoint_override(
@@ -857,6 +1010,33 @@ def checkpoint_override(
     if value is None:
         return None
     return resolve_path(value, label=f"checkpoint_overrides.{arm_id}.{seed}")
+
+
+def checkpoint_override_lineage_matches(
+    checkpoint: Path,
+    *,
+    seed: int,
+    protocol_id: str,
+    protocol_sha256: str,
+    method_sha256: str,
+    execution_mode: str,
+    artifact_bundle_id: str = "",
+) -> bool:
+    """Validate modern overrides while retaining support for legacy paths."""
+    if checkpoint.parent.name not in {"checkpoints", "lora_checkpoints"}:
+        return True
+    experiment_dir = checkpoint.parent.parent
+    if not (experiment_dir / CHECKPOINT_LINEAGE_FILENAME).is_file():
+        return True
+    return checkpoint_config_matches(
+        experiment_dir,
+        seed=seed,
+        protocol_id=protocol_id,
+        protocol_sha256=protocol_sha256,
+        method_sha256=method_sha256,
+        execution_mode=execution_mode,
+        artifact_bundle_id=artifact_bundle_id,
+    )
 
 
 def final_experiment_name(base: str, arm: ResolvedArm) -> str:
@@ -913,22 +1093,37 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
             )
             final_exp = final_experiment_name(base, arm)
             override = checkpoint_override(overrides, arm_id, seed)
+            execution_mode = (
+                "continuous_uniform"
+                if arm.method_values["CFG_METHOD_MODE"] == "uniform"
+                else "staged_curriculum"
+            )
+            artifact_bundle_id = (
+                validated["artifact_bundle"]["bundle_id"]
+                if arm.method == "llm" and validated.get("artifact_bundle")
+                else ""
+            )
+            if override and not checkpoint_override_lineage_matches(
+                override,
+                seed=seed,
+                protocol_id=protocol_id,
+                protocol_sha256=validated["protocol_sha256"],
+                method_sha256=arm.method_values["CFG_METHOD_SHA256"],
+                execution_mode=execution_mode,
+                artifact_bundle_id=artifact_bundle_id,
+            ):
+                raise ConfigError(
+                    f"checkpoint_overrides.{arm_id}.{seed} lineage does not match "
+                    "the active training contract"
+                )
             discovered = override or discover_checkpoint(
                 final_exp,
                 seed=seed,
                 protocol_id=protocol_id,
                 protocol_sha256=validated["protocol_sha256"],
                 method_sha256=arm.method_values["CFG_METHOD_SHA256"],
-                execution_mode=(
-                    "continuous_uniform"
-                    if arm.method_values["CFG_METHOD_MODE"] == "uniform"
-                    else "staged_curriculum"
-                ),
-                artifact_bundle_id=(
-                    validated["artifact_bundle"]["bundle_id"]
-                    if arm.method == "llm" and validated.get("artifact_bundle")
-                    else ""
-                ),
+                execution_mode=execution_mode,
+                artifact_bundle_id=artifact_bundle_id,
                 use_ema_checkpoint=validated["use_ema_checkpoint"],
             )
             if validated["use_ema_checkpoint"]:
@@ -1063,7 +1258,35 @@ def train_one(
             f"Completed checkpoint already exists for {run['arm_id']} seed {run['seed']}: {existing}"
         )
 
+    assert arm.method_values is not None
     base = str(run["experiment_base"])
+    artifact_bundle_id = (
+        validated["artifact_bundle"]["bundle_id"]
+        if arm.method == "llm" and validated.get("artifact_bundle")
+        else ""
+    )
+    state_status = experiment_state_contract_status(
+        base,
+        arm,
+        seed=int(run["seed"]),
+        protocol_id=validated["protocol_id"],
+        protocol_sha256=validated["protocol_sha256"],
+        method_sha256=arm.method_values["CFG_METHOD_SHA256"],
+        artifact_bundle_id=artifact_bundle_id,
+    )
+    if existing is None and state_status == "mismatch":
+        suffix = contract_isolation_suffix(
+            validated["protocol_sha256"], arm.method_values["CFG_METHOD_SHA256"]
+        )
+        base = f"{base}_{suffix}"
+        run["experiment_base"] = base
+        run["final_experiment"] = final_experiment_name(base, arm)
+        run["evaluation_slug"] = f"{run['evaluation_slug']}_{suffix}"
+        print(
+            "Isolating stale experiment state under a contract-specific base: "
+            f"{base}",
+            flush=True,
+        )
     if existing and policy == "retrain":
         base = f"{base}_{retrain_suffix(validated)}"
         run["experiment_base"] = base
@@ -1119,7 +1342,7 @@ def train_one(
         run["training_status"] = "dry_run"
         return
     subprocess.run(command, cwd=PLUTO_ROOT, env=env, check=True)
-    checkpoint = discover_checkpoint(
+    checkpoint = discover_checkpoint_with_retry(
         str(run["final_experiment"]),
         seed=int(run["seed"]),
         protocol_id=validated["protocol_id"],
@@ -1401,14 +1624,23 @@ def run_suite(
     runs: list[dict[str, Any]] = manifest["runs"]
     mode = validated["mode"]
     failures = 0
+
+    # Keep seed-scoped work together even when build_runs() stores runs grouped
+    # by arm in the manifest. Seedless baselines (for example zero-shot) still
+    # run once before the seeded train/evaluate pipelines.
+    execution_runs = [run for run in runs if run.get("seed") is None]
+    for seed in validated["seeds"]:
+        execution_runs.extend(run for run in runs if run.get("seed") == seed)
+
     if mode == "evaluate_only":
         for run in runs:
             if run["kind"] == "trainable":
                 run["training_status"] = "not_requested"
         manifest["updated_at"] = utc_now()
         atomic_write_json(manifest_path, manifest)
-    if mode in {"train_and_evaluate", "train_only"}:
-        for run in runs:
+
+    for run in execution_runs:
+        if mode in {"train_and_evaluate", "train_only"}:
             arm: ResolvedArm = validated["arms"][run["arm_id"]]
             print(
                 f"\n=== train arm={run['arm_id']} seed={run['seed']} "
@@ -1429,8 +1661,7 @@ def run_suite(
             manifest["updated_at"] = utc_now()
             atomic_write_json(manifest_path, manifest)
 
-    if mode in {"train_and_evaluate", "evaluate_only"}:
-        for run in runs:
+        if mode in {"train_and_evaluate", "evaluate_only"}:
             if run.get("training_status") == "failed":
                 continue
             for benchmark in validated["benchmarks"]:
@@ -1484,6 +1715,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     suite_path, source_payload = load_suite(args.config)
     resolved_payload = apply_cli_overrides(source_payload, args)
     validated = validate_suite(resolved_payload)
+    freeze_training_configs(validated)
     runs = build_runs(validated)
     manifest = manifest_payload(
         suite_path, source_payload, resolved_payload, validated, runs

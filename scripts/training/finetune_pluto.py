@@ -17,6 +17,7 @@ Example usage:
     python scripts/training/finetune_pluto.py --config-name training/train_pluto_lora
 """
 
+import json
 import logging
 import os
 import sys
@@ -68,6 +69,43 @@ set_default_path()
 # Hydra config
 CONFIG_PATH = "../../config"
 CONFIG_NAME = "default_training"
+CHECKPOINT_LINEAGE_FILENAME = ".checkpoint_lineage.json"
+
+
+def save_checkpoint_lineage(cfg: DictConfig, experiment_dir: Path) -> Path:
+    """Atomically persist the completed checkpoint's discovery contract."""
+    lora = cfg.get("lora") or {}
+    payload = {
+        "schema_version": 1,
+        "experiment": str(cfg.get("experiment", "")),
+        "seed": int(cfg.seed),
+        "lora": {
+            "training_protocol_id": str(lora.get("training_protocol_id", "")),
+            "training_protocol_sha256": str(
+                lora.get("training_protocol_sha256", "")
+            ),
+            "curriculum_method_id": str(lora.get("curriculum_method_id", "")),
+            "curriculum_method_sha256": str(
+                lora.get("curriculum_method_sha256", "")
+            ),
+            "execution_mode": str(lora.get("execution_mode", "")),
+            "curriculum_artifact_bundle_id": str(
+                lora.get("curriculum_artifact_bundle_id", "")
+            ),
+            "curriculum_artifact_bundle_manifest_sha256": str(
+                lora.get("curriculum_artifact_bundle_manifest_sha256", "")
+            ),
+        },
+    }
+    lineage_path = experiment_dir / CHECKPOINT_LINEAGE_FILENAME
+    temporary_path = lineage_path.with_name(
+        f"{lineage_path.name}.tmp.{os.getpid()}"
+    )
+    temporary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    temporary_path.replace(lineage_path)
+    return lineage_path
 
 
 def load_pretrained_pluto(
@@ -233,6 +271,8 @@ def build_lora_training_engine(
             "reset_optimizer_moments_on_resume", False
         ),
         scheduler_horizon_epochs=lora_config.get("scheduler_horizon_epochs", None),
+        scheduler_total_steps=lora_config.get("scheduler_total_steps", None),
+        scheduler_min_lr=lora_config.get("scheduler_min_lr", 1e-6),
         scheduler_type=lora_config.get("scheduler_type", "warmup_cosine"),
         training_protocol_id=lora_config.get("training_protocol_id", ""),
         training_protocol_sha256=lora_config.get("training_protocol_sha256", ""),
@@ -348,6 +388,9 @@ def main(cfg: DictConfig) -> Optional[TrainingEngine]:
                 ema_merged_path = lora_save_dir / "merged_final_ema.ckpt"
                 logger.info(f"Saving EMA merged model to {ema_merged_path}...")
                 engine.model.merge_and_save(str(ema_merged_path), use_ema=True)
+
+        lineage_path = save_checkpoint_lineage(cfg, Path(cfg.output_dir))
+        logger.info(f"Saved checkpoint lineage to {lineage_path}")
         
         logger.info("✓ Training complete!")
         

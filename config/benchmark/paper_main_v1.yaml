@@ -14,23 +14,24 @@ selection:
     # - zero_shot
     # - uniform
     # - random_exact
-    # - rule_exact
     # - rule_raw_exact
     # - loss_exact
     # - mpoc_exact
-    # - llm_exact_off
-    - llm_exact_on
+    - llm_exact_off
+    # - llm_exact_on
   seeds: [1,2,3,4,5] # [1,2,3,4,5]
   benchmarks:
-    # - val14
+    - interplan10
+    # - test14-hard-fast
     # - val14-fast
     # - test14-hard
-    # - test14-hard-fast
-    - interplan10
+    # - val14
 
 training:
-  existing_checkpoint: reuse # reuse | retrain | error
-  resume_policy: auto # auto | fresh | require_resume
+  # The optimizer trajectory changed from integral-matched constant LR to the
+  # declared 804-step warmup-cosine protocol. Old checkpoints cannot resume it.
+  existing_checkpoint: retrain # reuse | retrain | error
+  resume_policy: fresh # auto | fresh | require_resume
   pretrained_checkpoint: checkpoints/pluto_1M_aux_cil.ckpt
   retrain_tag: null
 
@@ -88,7 +89,7 @@ arms:
     kind: trainable
     label: Rule-Raw exact
     method: rule_raw
-    artifact_version: v1.0
+    artifact_version: v1.25.4
     method_config: config/curriculum_method/rule_raw.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -99,7 +100,7 @@ arms:
     kind: trainable
     label: Loss-ranked exact
     method: loss
-    artifact_version: v1.22
+    artifact_version: v1.25.4
     method_config: config/curriculum_method/loss.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -110,7 +111,7 @@ arms:
     kind: trainable
     label: MPOC exact
     method: mpoc
-    artifact_version: v1.22
+    artifact_version: v1.25.4
     method_config: config/curriculum_method/mpoc.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -121,7 +122,7 @@ arms:
     kind: trainable
     label: LLM exact (type-off)
     method: llm
-    artifact_version: v5.0.4.1.22
+    artifact_version: v5.0.4.1.25.4
     method_config: config/curriculum_method/llm_exact_off.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -132,7 +133,7 @@ arms:
     kind: trainable
     label: LLM exact (type-on, paired minimal delta)
     method: llm
-    artifact_version: v5.0.4.1.22
+    artifact_version: v5.0.4.1.25.4
     method_config: config/curriculum_method/llm_exact_on.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "on"

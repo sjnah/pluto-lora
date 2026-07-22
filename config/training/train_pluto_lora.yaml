@@ -7,6 +7,11 @@
 # - Encoder-only LoRA + ultra-minimal head fine-tuning
 
 hydra:
+  # Hydra's default second-resolution run directory can be shared by separate
+  # training processes that start in the same second. Keep each run's config
+  # and logs isolated so checkpoint lineage cannot be overwritten by a peer.
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S-%f}-${oc.env:PLUTO_TRAINING_RUN_SUFFIX,standalone}
   searchpath:
     - pkg://nuplan.planning.script.config.common
     - pkg://nuplan.planning.script.config.training
@@ -67,6 +72,8 @@ lora:
   # Final cumulative epoch boundary for a scheduler shared across resumed
   # processes. Null preserves the ordinary single-process behavior.
   scheduler_horizon_epochs: ${training_protocol.schedule.horizon_epochs}
+  scheduler_total_steps: ${training_protocol.schedule.total_steps}
+  scheduler_min_lr: ${training_protocol.schedule.min_lr}
   scheduler_type: ${training_protocol.schedule.type}
   training_protocol_id: ${training_protocol.protocol_id}
   training_protocol_sha256: ""

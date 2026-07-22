@@ -77,6 +77,8 @@ class PLUTOLoRATrainer(LightningTrainer):
         is_curriculum_stage: bool = False,  # For backward compatibility
         reset_optimizer_moments_on_resume: bool = False,
         scheduler_horizon_epochs: Optional[int] = None,
+        scheduler_total_steps: Optional[int] = None,
+        scheduler_min_lr: float = 1e-6,
         scheduler_type: str = "warmup_cosine",
         training_protocol_id: str = "",
         training_protocol_sha256: str = "",
@@ -115,6 +117,10 @@ class PLUTOLoRATrainer(LightningTrainer):
             remove_invalid_goals: Whether to remove invalid goals (configurable)
             scheduler_horizon_epochs: Final cumulative epoch horizon used to
                 construct one scheduler across multi-process phase resumes.
+            scheduler_total_steps: Required optimizer-step horizon. When set,
+                the runtime-derived horizon must match exactly.
+            scheduler_min_lr: Terminal LR for the LoRA parameter group; other
+                groups preserve their peak-LR ratio.
         """
         # Initialize parent class
         super().__init__(
@@ -155,6 +161,12 @@ class PLUTOLoRATrainer(LightningTrainer):
             if scheduler_horizon_epochs is not None
             else None
         )
+        self.scheduler_total_steps = (
+            int(scheduler_total_steps)
+            if scheduler_total_steps is not None
+            else None
+        )
+        self.scheduler_min_lr = float(scheduler_min_lr)
         self.scheduler_type = str(scheduler_type)
         if self.scheduler_type not in {"warmup_cosine", "warmup_constant"}:
             raise ValueError(
@@ -180,6 +192,18 @@ class PLUTOLoRATrainer(LightningTrainer):
                     "scheduler_horizon_epochs must be greater than or equal to "
                     f"the current cumulative epochs ({self.epochs})"
                 )
+        if self.scheduler_total_steps is not None:
+            if self.scheduler_total_steps <= 0:
+                raise ValueError("scheduler_total_steps must be positive")
+            if self.warmup_steps is not None and self.scheduler_total_steps < int(
+                self.warmup_steps
+            ):
+                raise ValueError(
+                    "scheduler_total_steps must be greater than or equal to "
+                    "warmup_steps"
+                )
+        if self.scheduler_min_lr < 0:
+            raise ValueError("scheduler_min_lr must be non-negative")
         
         # Training stability
         self.gradient_clip_val = gradient_clip_val
@@ -491,6 +515,7 @@ class PLUTOLoRATrainer(LightningTrainer):
             estimated_steps=estimated_steps,
             current_cumulative_epochs=self.epochs,
             scheduler_horizon_epochs=self.scheduler_horizon_epochs,
+            configured_total_steps=self.scheduler_total_steps,
         )
         self._configured_scheduler_total_steps = total_steps
         logger.info(
@@ -516,7 +541,7 @@ class PLUTOLoRATrainer(LightningTrainer):
             scheduler = WarmupCosLR(
                 optimizer=optimizer,
                 lr=self.lora_lr if self.lora_enabled else self.head_lr,
-                min_lr=1e-6,
+                min_lr=self.scheduler_min_lr,
                 warmup_steps=self.warmup_steps,
                 epochs=self.epochs,
                 total_steps=total_steps,
@@ -551,8 +576,9 @@ class PLUTOLoRATrainer(LightningTrainer):
         estimated_steps: int,
         current_cumulative_epochs: int,
         scheduler_horizon_epochs: Optional[int],
+        configured_total_steps: Optional[int] = None,
     ) -> int:
-        """Scale the phase-local estimate to one final cumulative horizon."""
+        """Scale the phase-local estimate and enforce an explicit step horizon."""
         estimated_steps = int(estimated_steps)
         current_cumulative_epochs = int(current_cumulative_epochs)
         if estimated_steps <= 0:
@@ -560,16 +586,31 @@ class PLUTOLoRATrainer(LightningTrainer):
         if current_cumulative_epochs <= 0:
             raise ValueError("current_cumulative_epochs must be positive")
         if scheduler_horizon_epochs is None:
-            return estimated_steps
+            derived_steps = estimated_steps
+        else:
+            scheduler_horizon_epochs = int(scheduler_horizon_epochs)
+            if scheduler_horizon_epochs < current_cumulative_epochs:
+                raise ValueError(
+                    "scheduler_horizon_epochs must cover the current cumulative epochs"
+                )
+            scaled_steps = estimated_steps * scheduler_horizon_epochs
+            derived_steps = (
+                scaled_steps + current_cumulative_epochs - 1
+            ) // current_cumulative_epochs
 
-        scheduler_horizon_epochs = int(scheduler_horizon_epochs)
-        if scheduler_horizon_epochs < current_cumulative_epochs:
-            raise ValueError(
-                "scheduler_horizon_epochs must cover the current cumulative epochs"
+        if configured_total_steps is None:
+            return derived_steps
+        configured_total_steps = int(configured_total_steps)
+        if configured_total_steps <= 0:
+            raise ValueError("configured_total_steps must be positive")
+        if derived_steps != configured_total_steps:
+            raise RuntimeError(
+                "Runtime optimizer-step horizon does not match the training protocol: "
+                f"derived={derived_steps}, configured={configured_total_steps}. "
+                "Keep the effective batch size and scenario universe fixed or declare "
+                "a new optimizer protocol."
             )
-
-        scaled_steps = estimated_steps * scheduler_horizon_epochs
-        return (scaled_steps + current_cumulative_epochs - 1) // current_cumulative_epochs
+        return configured_total_steps
 
     def _validate_scheduler_horizon(self) -> None:
         """Reject a resumed scheduler whose checkpoint restored a stale horizon."""
@@ -695,6 +736,8 @@ class PLUTOLoRATrainer(LightningTrainer):
             ),
             "scheduler_type": self.scheduler_type,
             "scheduler_horizon_epochs": self.scheduler_horizon_epochs,
+            "scheduler_total_steps": self.scheduler_total_steps,
+            "scheduler_min_lr": self.scheduler_min_lr,
         }
 
     def _validate_checkpoint_protocol(self, checkpoint: Dict) -> None:
@@ -720,6 +763,8 @@ class PLUTOLoRATrainer(LightningTrainer):
             "scheduler_horizon_epochs": getattr(
                 self, "scheduler_horizon_epochs", None
             ),
+            "scheduler_total_steps": getattr(self, "scheduler_total_steps", None),
+            "scheduler_min_lr": getattr(self, "scheduler_min_lr", 1e-6),
         }
         if not expected["artifact_bundle_id"]:
             expected.pop("artifact_bundle_id")
