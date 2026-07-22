@@ -165,3 +165,4 @@ checkpoints/
 archive/
 artifacts/
 .batch_filters/
+tests/

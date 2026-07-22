@@ -287,6 +287,14 @@ def parse_method_label(method_key: str) -> ParsedMethodLabel | None:
         variant = "legacy" if base_key == "curriculum_llmbased" else None
         return ParsedMethodLabel(direct_labels[base_key], None, variant, seed)
 
+    consensus_swap_match = re.fullmatch(
+        r"llm_consensus_swap_(?P<payload>v[0-9][A-Za-z0-9._-]*)",
+        base_key,
+    )
+    if consensus_swap_match is not None:
+        version, _ = split_version_payload(consensus_swap_match.group("payload"))
+        return ParsedMethodLabel("llm", version, "consensus_swap", seed)
+
     patterns = [
         (r"curriculum_uniform_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "uniform"),
         (r"uniform_(?P<payload>v[0-9][A-Za-z0-9._-]*)", "uniform"),
@@ -331,6 +339,7 @@ def short_method_label(method_key: str) -> str | None:
         "exact_on",
         "capped_off",
         "capped_on",
+        "consensus_swap",
     }:
         family = f"llm_{parsed.variant}"
         variant = None
@@ -415,6 +424,7 @@ def method_sort_key(method_key: str) -> tuple[int, int, str]:
             "exact_on": 1,
             "capped_off": 2,
             "capped_on": 3,
+            "consensus_swap": 4,
             None: 9,
         }
         if parsed.family == "llm":
@@ -523,11 +533,13 @@ def expand_methods(
     else:
         keys = []
         for token in parse_csv_arg(value):
-            normalized = token.lower().replace("-", "_")
-            if method_spec_for_key(normalized) is None:
+            literal = token.lower()
+            normalized = literal.replace("-", "_")
+            method_key = literal if method_spec_for_key(literal) is not None else normalized
+            if method_spec_for_key(method_key) is None:
                 valid = ", ".join(sorted(METHOD_SPECS))
                 raise SystemExit(f"Unknown method '{token}'. Valid values: {valid}")
-            keys.append(normalized)
+            keys.append(method_key)
     return [
         spec
         for key in sorted(dict.fromkeys(keys), key=method_sort_key)
@@ -983,7 +995,9 @@ def summarize_one(
 
 
 SEED_SUFFIX_RE = re.compile(
-    r"^(?P<base>.+)_seed(?P<seed>[0-9]+)(?:_(?P<trailing_variant>ema|standard))?$",
+    r"^(?P<base>.+)_seed(?P<seed>[0-9]+)"
+    r"(?:_(?P<contract_tag>contract_[0-9a-f]{8,64}(?:_[0-9a-f]{8,64})*))?"
+    r"(?:_(?P<trailing_variant>ema|standard))?$",
     re.IGNORECASE,
 )
 
@@ -1024,17 +1038,19 @@ def aggregate_seeded_rows(rows: list[dict[str, Any]], include_detail: bool = Fal
     for (test_key, base_method), seeded_rows in grouped.items():
         seeded_rows.sort(key=lambda item: item[0])
         source_rows = [row for _, row in seeded_rows]
+        seed_numbers = [seed for seed, _ in seeded_rows]
+        unique_seeds = len(set(seed_numbers)) == len(seed_numbers)
         comparable_fields = ("metric_type", "simulation_type", "simulation_challenge")
         comparable = all(
             len({row.get(field) for row in source_rows}) == 1
             for field in comparable_fields
         )
         valid = all(row.get("status") == "ok" and row.get("score") is not None for row in source_rows)
-        if len(source_rows) < 2 or not comparable or not valid:
+        if len(source_rows) < 2 or not unique_seeds or not comparable or not valid:
             passthrough.extend(source_rows)
             continue
 
-        seeds = [seed for seed, _ in seeded_rows]
+        seeds = seed_numbers
         scores = [float(row["score"]) for row in source_rows]
         base_spec = method_spec_for_key(base_method)
         scenario_counts = {row.get("scenario_count") for row in source_rows}
@@ -1266,7 +1282,7 @@ def main() -> int:
             "Comma-separated methods or all. Methods: zeroshot, rulebased, lossbased, "
             "curriculum_uniform, curriculum_randombucket, curriculum_llm_guided_v2, "
             "curriculum_uniform_v*, curriculum_llm_guided_v*, uniform_v*, "
-            "llm_guided_v*, rule_v*, loss_v*, random_v*, mpoc_v*, curriculum_llmbased, "
+            "llm_guided_v*, llm_consensus_swap_v*, rule_v*, loss_v*, random_v*, mpoc_v*, curriculum_llmbased, "
             "curriculum_mpoc, curriculum_{rule,loss,randombucket,mpoc,llm}_percentile_ehu_v*. "
             "Versioned Uniform/LLM-guided/percentile-EHU methods present in result "
             "directories are auto-discovered for all."
