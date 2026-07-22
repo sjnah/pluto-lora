@@ -65,6 +65,13 @@ BENCHMARKS = {
     "interplan10",
     "interplan-benchmark",
 }
+PRIORITY_BENCHMARK_ORDER = (
+    "interplan10",
+    "test14-hard-fast",
+    "val14-fast",
+    "test14-hard",
+    "val14",
+)
 STAGE_CUDA_ENVIRONMENT = {
     "training": "PLUTO_TRAINING_CUDA_VISIBLE_DEVICES",
     "evaluation": "PLUTO_EVALUATION_CUDA_VISIBLE_DEVICES",
@@ -357,6 +364,21 @@ def unique_values(values: Iterable[Any], label: str) -> list[Any]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def resolve_benchmark_order(
+    benchmarks: list[str], *, use_priority_order: bool
+) -> list[str]:
+    if not use_priority_order:
+        return benchmarks
+    priority = {
+        benchmark: index
+        for index, benchmark in enumerate(PRIORITY_BENCHMARK_ORDER)
+    }
+    return sorted(
+        benchmarks,
+        key=lambda benchmark: priority.get(benchmark, len(PRIORITY_BENCHMARK_ORDER)),
+    )
 
 
 def apply_cli_overrides(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -663,6 +685,10 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     arms_payload = require_mapping(payload, "arms")
 
     mode = require_choice(workflow.get("mode"), WORKFLOW_MODES, "workflow.mode")
+    interleave_evaluation_by_seed = require_bool(
+        workflow.get("interleave_evaluation_by_seed", True),
+        "workflow.interleave_evaluation_by_seed",
+    )
     checkpoint_policy = require_choice(
         training.get("existing_checkpoint"), CHECKPOINT_POLICIES, "training.existing_checkpoint"
     )
@@ -678,11 +704,18 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     benchmarks = unique_values(
         [str(value) for value in require_list(selection, "benchmarks")], "benchmark"
     )
+    use_priority_benchmark_order = require_bool(
+        selection.get("use_priority_benchmark_order", False),
+        "selection.use_priority_benchmark_order",
+    )
     unsupported = sorted(set(benchmarks) - BENCHMARKS)
     if unsupported:
         raise ConfigError(f"Unsupported benchmarks: {unsupported}")
     if mode != "train_only" and not benchmarks:
         raise ConfigError(f"workflow.mode={mode} requires at least one benchmark")
+    benchmarks = resolve_benchmark_order(
+        benchmarks, use_priority_order=use_priority_benchmark_order
+    )
 
     protocol_path = resolve_path(payload.get("training_protocol"), label="training_protocol")
     _, protocol_payload = resolver_load_yaml(str(protocol_path))
@@ -787,11 +820,13 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "suite_id": suite_id,
         "mode": mode,
+        "interleave_evaluation_by_seed": interleave_evaluation_by_seed,
         "continue_on_failure": bool(workflow.get("continue_on_failure", False)),
         "dry_run": bool(workflow.get("dry_run", False)),
         "selected_arms": selected_arms,
         "seeds": seeds,
         "benchmarks": benchmarks,
+        "use_priority_benchmark_order": use_priority_benchmark_order,
         "checkpoint_policy": checkpoint_policy,
         "resume_policy": resume_policy,
         "feature_cache_name": feature_cache_name,
@@ -1592,6 +1627,9 @@ def manifest_payload(
         "workflow": {
             "mode": validated["mode"],
             "dry_run": validated["dry_run"],
+            "interleave_evaluation_by_seed": validated[
+                "interleave_evaluation_by_seed"
+            ],
             "checkpoint_policy": validated["checkpoint_policy"],
             "resume_policy": validated["resume_policy"],
             "use_ema_checkpoint": validated["use_ema_checkpoint"],
@@ -1603,6 +1641,9 @@ def manifest_payload(
             "arms": validated["selected_arms"],
             "seeds": validated["seeds"],
             "benchmarks": validated["benchmarks"],
+            "use_priority_benchmark_order": validated[
+                "use_priority_benchmark_order"
+            ],
         },
         "protocol": {
             "path": str(validated["protocol_path"]),
@@ -1625,34 +1666,44 @@ def run_suite(
     mode = validated["mode"]
     failures = 0
 
-    # Keep seed-scoped work together even when build_runs() stores runs grouped
-    # by arm in the manifest. Seedless baselines (for example zero-shot) still
-    # run once before the seeded train/evaluate pipelines.
-    execution_runs = [run for run in runs if run.get("seed") is None]
-    for seed in validated["seeds"]:
-        execution_runs.extend(run for run in runs if run.get("seed") == seed)
-
-    if mode == "evaluate_only":
-        for run in runs:
-            if run["kind"] == "trainable":
-                run["training_status"] = "not_requested"
+    def train_run(run: dict[str, Any]) -> None:
+        nonlocal failures
+        arm: ResolvedArm = validated["arms"][run["arm_id"]]
+        print(
+            f"\n=== train arm={run['arm_id']} seed={run['seed']} "
+            f"contract={run['sampler_contract']} routing={run['routing_mode']} ===",
+            flush=True,
+        )
+        try:
+            train_one(run, arm, validated)
+        except Exception as exc:
+            failures += 1
+            run["training_status"] = "failed"
+            run["training_error"] = str(exc)
+            manifest["updated_at"] = utc_now()
+            atomic_write_json(manifest_path, manifest)
+            if not validated["continue_on_failure"]:
+                raise
+            print(f"ERROR: {exc}", file=sys.stderr, flush=True)
         manifest["updated_at"] = utc_now()
         atomic_write_json(manifest_path, manifest)
 
-    for run in execution_runs:
-        if mode in {"train_and_evaluate", "train_only"}:
-            arm: ResolvedArm = validated["arms"][run["arm_id"]]
+    def evaluate_run(run: dict[str, Any]) -> None:
+        nonlocal failures
+        if run.get("training_status") == "failed":
+            return
+        for benchmark in validated["benchmarks"]:
             print(
-                f"\n=== train arm={run['arm_id']} seed={run['seed']} "
-                f"contract={run['sampler_contract']} routing={run['routing_mode']} ===",
+                f"\n=== evaluate arm={run['arm_id']} seed={run['seed']} "
+                f"benchmark={benchmark} ===",
                 flush=True,
             )
             try:
-                train_one(run, arm, validated)
+                evaluate_one(run, benchmark, validated)
             except Exception as exc:
                 failures += 1
-                run["training_status"] = "failed"
-                run["training_error"] = str(exc)
+                run["evaluation_status"][benchmark] = "failed"
+                run.setdefault("evaluation_errors", {})[benchmark] = str(exc)
                 manifest["updated_at"] = utc_now()
                 atomic_write_json(manifest_path, manifest)
                 if not validated["continue_on_failure"]:
@@ -1661,28 +1712,29 @@ def run_suite(
             manifest["updated_at"] = utc_now()
             atomic_write_json(manifest_path, manifest)
 
+    if mode == "evaluate_only":
+        for run in runs:
+            if run["kind"] == "trainable":
+                run["training_status"] = "not_requested"
+        manifest["updated_at"] = utc_now()
+        atomic_write_json(manifest_path, manifest)
+
+    if mode == "train_and_evaluate" and validated["interleave_evaluation_by_seed"]:
+        # build_runs() stores runs by arm. Regroup them by configured seed so
+        # every seed's train/evaluate pipelines finish before the next seed.
+        execution_runs = [run for run in runs if run.get("seed") is None]
+        for seed in validated["seeds"]:
+            execution_runs.extend(run for run in runs if run.get("seed") == seed)
+        for run in execution_runs:
+            train_run(run)
+            evaluate_run(run)
+    else:
+        if mode in {"train_and_evaluate", "train_only"}:
+            for run in runs:
+                train_run(run)
         if mode in {"train_and_evaluate", "evaluate_only"}:
-            if run.get("training_status") == "failed":
-                continue
-            for benchmark in validated["benchmarks"]:
-                print(
-                    f"\n=== evaluate arm={run['arm_id']} seed={run['seed']} "
-                    f"benchmark={benchmark} ===",
-                    flush=True,
-                )
-                try:
-                    evaluate_one(run, benchmark, validated)
-                except Exception as exc:
-                    failures += 1
-                    run["evaluation_status"][benchmark] = "failed"
-                    run.setdefault("evaluation_errors", {})[benchmark] = str(exc)
-                    manifest["updated_at"] = utc_now()
-                    atomic_write_json(manifest_path, manifest)
-                    if not validated["continue_on_failure"]:
-                        raise
-                    print(f"ERROR: {exc}", file=sys.stderr, flush=True)
-                manifest["updated_at"] = utc_now()
-                atomic_write_json(manifest_path, manifest)
+            for run in runs:
+                evaluate_run(run)
     return 1 if failures else 0
 
 

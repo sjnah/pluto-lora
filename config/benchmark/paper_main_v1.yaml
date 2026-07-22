@@ -6,6 +6,7 @@ artifact_bundle_manifest: null
 
 workflow:
   mode: train_and_evaluate # train_and_evaluate | train_only | evaluate_only
+  interleave_evaluation_by_seed: false # true: train1/test1/train2/test2, false: train-all/test-all
   continue_on_failure: false
   dry_run: false
 
@@ -17,22 +18,22 @@ selection:
     # - rule_raw_exact
     # - loss_exact
     # - mpoc_exact
-    - llm_exact_off
-    # - llm_consensus_swap_ablation
+    # - llm_exact_off
     - llm_exact_on
   seeds: [1,2,3,4,5] # [1,2,3,4,5]
+  use_priority_benchmark_order: true # false: listed order, true: InterPlan/fast-first order
   benchmarks:
-    - interplan10
-    # - test14-hard-fast
+    # - val14
     # - val14-fast
     # - test14-hard
-    # - val14
+    # - test14-hard-fast
+    - interplan10
 
 training:
   # The optimizer trajectory changed from integral-matched constant LR to the
   # declared 804-step warmup-cosine protocol. Old checkpoints cannot resume it.
-  existing_checkpoint: retrain # reuse | retrain | error
-  resume_policy: fresh # auto | fresh | require_resume
+  existing_checkpoint: reuse # reuse | retrain | error
+  resume_policy: auto # auto | fresh | require_resume
   pretrained_checkpoint: checkpoints/pluto_1M_aux_cil.ckpt
   retrain_tag: null
 
@@ -57,7 +58,7 @@ arms:
     kind: trainable
     label: Uniform FT
     method: uniform
-    artifact_version: v1.19
+    artifact_version: v1.25.3
     method_config: config/curriculum_method/uniform.yaml
     sampler_contract: uniform
     routing_mode: "off"
@@ -68,29 +69,18 @@ arms:
     kind: trainable
     label: RandomBucket exact
     method: random
-    artifact_version: v1.22
+    artifact_version: v1.25.3
     method_config: config/curriculum_method/random.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
     experiment_base_template: random_{artifact_version}_{protocol_id}_seed{seed}
     evaluation_slug_template: random_{artifact_version}_{protocol_id}_seed{seed}
 
-  rule_exact:
-    kind: trainable
-    label: Rule-based exact
-    method: rule
-    artifact_version: v3.22
-    method_config: config/curriculum_method/rule.yaml
-    sampler_contract: exact_bucket_quota
-    routing_mode: "off"
-    experiment_base_template: rule_{artifact_version}_{protocol_id}_seed{seed}
-    evaluation_slug_template: rule_{artifact_version}_{protocol_id}_seed{seed}
-
   rule_raw_exact:
     kind: trainable
     label: Rule-Raw exact
     method: rule_raw
-    artifact_version: v1.25.4
+    artifact_version: v1.25.3
     method_config: config/curriculum_method/rule_raw.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -101,7 +91,7 @@ arms:
     kind: trainable
     label: Loss-ranked exact
     method: loss
-    artifact_version: v1.25.4
+    artifact_version: v1.25.3
     method_config: config/curriculum_method/loss.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -112,7 +102,7 @@ arms:
     kind: trainable
     label: MPOC exact
     method: mpoc
-    artifact_version: v1.25.4
+    artifact_version: v1.25.3
     method_config: config/curriculum_method/mpoc.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -129,19 +119,6 @@ arms:
     routing_mode: "off"
     experiment_base_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
     evaluation_slug_template: llm_guided_{artifact_version}_{protocol_id}_exact_off_seed{seed}
-
-  # Raw-aware hard-set swap ablation. The optimizer, phase schedule, exact
-  # sampler, and total bucket cardinalities remain matched to llm_exact_off.
-  llm_consensus_swap_ablation:
-    kind: trainable
-    label: LLM raw-aware consensus-swap exact
-    method: llm
-    artifact_version: v5.0.4.1.25.4-cswap1
-    method_config: config/curriculum_method/llm_consensus_swap.yaml
-    sampler_contract: exact_bucket_quota
-    routing_mode: "off"
-    experiment_base_template: llm_consensus_swap_{artifact_version}_{protocol_id}_seed{seed}
-    evaluation_slug_template: llm_consensus_swap_{artifact_version}_{protocol_id}_seed{seed}
 
   llm_exact_on:
     kind: trainable
