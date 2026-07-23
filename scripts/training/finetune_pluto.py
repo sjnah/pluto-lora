@@ -287,6 +287,12 @@ def build_lora_training_engine(
         require_protocol_match_on_resume=lora_config.get(
             "require_protocol_match_on_resume", False
         ),
+        preserve_l2sp_anchor_on_resume=lora_config.get(
+            "preserve_l2sp_anchor_on_resume", False
+        ),
+        preserve_rng_state_on_resume=lora_config.get(
+            "preserve_rng_state_on_resume", False
+        ),
         ultra_minimal=lora_config.get("ultra_minimal", False),
     )
     

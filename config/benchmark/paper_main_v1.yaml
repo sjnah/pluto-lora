@@ -4,6 +4,24 @@ training_protocol: config/training_protocol/flat_area_matched_v1.yaml
 # --artifact-bundle-manifest override when creating a new content-addressed bundle.
 artifact_bundle_manifest: null
 
+# The toggle applies to every trainable arm for both training and evaluation.
+# Variant-specific run suffixes prevent checkpoint reuse across universes.
+filter_variants:
+  original_3058:
+    run_suffix: null
+    method_configs: {}
+  official_train_only940:
+    run_suffix: official_train_only940
+    method_configs:
+      uniform: config/curriculum_method/uniform_official_train_only940.yaml
+      staged_uniform_exact: config/curriculum_method/staged_uniform_exact_official_train_only940.yaml
+      random_exact: config/curriculum_method/random_official_train_only940.yaml
+      rule_raw_exact: config/curriculum_method/rule_raw_official_train_only940.yaml
+      loss_exact: config/curriculum_method/loss_official_train_only940.yaml
+      mpoc_exact: config/curriculum_method/mpoc_official_train_only940.yaml
+      llm_exact_off: config/curriculum_method/llm_exact_off_official_train_only940.yaml
+      llm_exact_on: config/curriculum_method/llm_exact_on_official_train_only940.yaml
+
 workflow:
   mode: train_and_evaluate # train_and_evaluate | train_only | evaluate_only
   interleave_evaluation_by_seed: false # true: train1/test1/train2/test2, false: train-all/test-all
@@ -14,20 +32,20 @@ selection:
   arms:
     # - zero_shot
     # - uniform
+    - staged_uniform_exact
     # - random_exact
-    # - rule_raw_exact
-    # - loss_exact
+    - rule_raw_exact
+    - loss_exact
     # - mpoc_exact
     # - llm_exact_off
-    - llm_exact_on
+    # - llm_exact_on
   seeds: [1,2,3,4,5] # [1,2,3,4,5]
   use_priority_benchmark_order: true # false: listed order, true: InterPlan/fast-first order
   benchmarks:
-    # - val14
-    # - val14-fast
-    # - test14-hard
-    # - test14-hard-fast
-    - interplan10
+    # - val14 # 1h?
+    # - val14-fast # 18m
+    # - test14-hard # 16m
+    - interplan10 # 8m
 
 training:
   # The optimizer trajectory changed from integral-matched constant LR to the
@@ -36,9 +54,9 @@ training:
   resume_policy: auto # auto | fresh | require_resume
   pretrained_checkpoint: checkpoints/pluto_1M_aux_cil.ckpt
   retrain_tag: null
+  filter_variant: official_train_only940 # original_3058 | official_train_only940
 
 evaluation:
-  use_ema_checkpoint: false # false: merged_final.ckpt, true: merged_final_ema.ckpt
   require_completed_checkpoint: true
   skip_completed_same_version_seed: true
   disable_simulation_log: true
@@ -65,11 +83,22 @@ arms:
     experiment_base_template: uniform_{artifact_version}_{protocol_id}_seed{seed}
     evaluation_slug_template: uniform_{artifact_version}_{protocol_id}_seed{seed}
 
+  staged_uniform_exact:
+    kind: trainable
+    label: Staged Uniform exact
+    method: staged_uniform_exact
+    artifact_version: v1.26.1
+    method_config: config/curriculum_method/staged_uniform_exact.yaml
+    sampler_contract: exact_bucket_quota
+    routing_mode: "off"
+    experiment_base_template: staged_uniform_exact_{artifact_version}_{protocol_id}_seed{seed}
+    evaluation_slug_template: staged_uniform_exact_{artifact_version}_{protocol_id}_seed{seed}
+
   random_exact:
     kind: trainable
     label: RandomBucket exact
     method: random
-    artifact_version: v1.25.3
+    artifact_version: v1.26.1
     method_config: config/curriculum_method/random.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -80,7 +109,7 @@ arms:
     kind: trainable
     label: Rule-Raw exact
     method: rule_raw
-    artifact_version: v1.25.3
+    artifact_version: v1.26.1
     method_config: config/curriculum_method/rule_raw.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -91,7 +120,7 @@ arms:
     kind: trainable
     label: Loss-ranked exact
     method: loss
-    artifact_version: v1.25.3
+    artifact_version: v1.26.1
     method_config: config/curriculum_method/loss.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -102,7 +131,7 @@ arms:
     kind: trainable
     label: MPOC exact
     method: mpoc
-    artifact_version: v1.25.3
+    artifact_version: v1.26.1
     method_config: config/curriculum_method/mpoc.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -113,7 +142,7 @@ arms:
     kind: trainable
     label: LLM exact (type-off)
     method: llm
-    artifact_version: v5.0.5.0.25.3
+    artifact_version: v5.0.5.0.26.1
     method_config: config/curriculum_method/llm_exact_off.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -124,7 +153,7 @@ arms:
     kind: trainable
     label: LLM exact (type-on, paired minimal delta)
     method: llm
-    artifact_version: v5.0.5.0.25.3
+    artifact_version: v5.0.5.0.26.1
     method_config: config/curriculum_method/llm_exact_on.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "on"

@@ -82,6 +82,8 @@ lora:
   curriculum_artifact_bundle_id: ""
   curriculum_artifact_bundle_manifest_sha256: ""
   require_protocol_match_on_resume: false
+  preserve_l2sp_anchor_on_resume: ${training_protocol.checkpoint.preserve_l2sp_anchor_on_resume}
+  preserve_rng_state_on_resume: ${training_protocol.checkpoint.preserve_rng_state_on_resume}
   save_merged: true
   use_collision_loss: true
   use_contrast_loss: false

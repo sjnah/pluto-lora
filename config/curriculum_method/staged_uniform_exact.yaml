@@ -1,0 +1,19 @@
+method: staged_uniform_exact
+label: Staged Uniform exact
+mode: bucketed
+# Bucket identity is immaterial under one-third quotas. Reusing the canonical
+# random equal-cardinality partition exercises the exact-quota sampler without
+# injecting a semantic difficulty ranking.
+filter_prefix: random_percentile_ehu
+score_method: staged_uniform_exact
+curriculum_method: score_bucket_curriculum_v1
+sampler_mode: exact_bucket_quota
+max_repeat_per_scenario: 4
+hard_subtype_balance: false
+tie_break_mode: stable_hash
+bucketization_mode: percentile_tercile
+bucket_cardinality_contract: equal_cardinality_quantile
+bucket_master_filter: uniform_train_all
+phase_policy: uniform_all_epochs
+phase_names: {a: uniform_control_a, b: uniform_control_b, c: uniform_control_c}
+exposure: {persistent: false, max_repeat_per_near_duplicate_group: 0, max_cumulative_exposure_per_scenario: 0, max_cumulative_exposure_per_near_duplicate_group: 0}

@@ -81,6 +81,8 @@ ULTRA_MINIMAL="$CFG_ULTRA_MINIMAL"
 BATCH_SIZE="$CFG_BATCH_SIZE"
 ACCUMULATE_GRAD_BATCHES="$CFG_ACCUMULATE_GRAD_BATCHES"
 NUM_SANITY_VAL_STEPS="$CFG_NUM_SANITY_VAL_STEPS"
+PRESERVE_L2SP_ANCHOR_ON_RESUME="$CFG_PRESERVE_L2SP_ANCHOR_ON_RESUME"
+PRESERVE_RNG_STATE_ON_RESUME="$CFG_PRESERVE_RNG_STATE_ON_RESUME"
 
 FEATURE_CACHE_NAME="${FEATURE_CACHE_NAME:-}"
 FEATURE_CACHE_ROOT="${FEATURE_CACHE_ROOT:-${REPO_ROOT}/artifacts/feature_cache}"
@@ -106,6 +108,7 @@ PHASE_C_TARGET_PROPORTIONS="$CFG_PHASE_C_TARGET_PROPORTIONS"
 PHASE_A_PACING_SCHEDULE="$CFG_PHASE_A_PACING_SCHEDULE"
 PHASE_B_PACING_SCHEDULE="$CFG_PHASE_B_PACING_SCHEDULE"
 PHASE_C_PACING_SCHEDULE="$CFG_PHASE_C_PACING_SCHEDULE"
+PHASE_POLICY="$CFG_PHASE_POLICY"
 
 is_enabled() {
     case "$1" in
@@ -132,6 +135,7 @@ CURRICULUM_SPLITS="[$SCENARIO_FILTER_EASY,$SCENARIO_FILTER_MEDIUM,$SCENARIO_FILT
 BUCKETIZATION_MODE="$CFG_BUCKETIZATION_MODE"
 BUCKET_CARDINALITY_CONTRACT="$CFG_BUCKET_CARDINALITY_CONTRACT"
 BUCKET_MASTER_FILTER="$CFG_BUCKET_MASTER_FILTER"
+VALIDATION_FILTER="$CFG_VALIDATION_FILTER"
 TIE_BREAK_MODE="${TIE_BREAK_MODE:-$CFG_TIE_BREAK_MODE}"
 SAMPLER_MODE="${SAMPLER_MODE:-$CFG_SAMPLER_MODE}"
 MAX_REPEAT_PER_SCENARIO="$CFG_MAX_REPEAT_PER_SCENARIO"
@@ -218,6 +222,10 @@ verify_type_routing_metadata_snapshot() {
 }
 
 ensure_method_filters() {
+    if [ -n "$VALIDATION_FILTER" ] && [ ! -f "${PLUTO_FILTER_DIR}/${VALIDATION_FILTER}.yaml" ]; then
+        echo "Missing validation scenario filter: ${VALIDATION_FILTER}.yaml" >&2
+        exit 1
+    fi
     if [ "$CFG_METHOD_MODE" = "uniform" ]; then
         if [ ! -f "${PLUTO_FILTER_DIR}/${SCENARIO_FILTER_UNIFORM}.yaml" ]; then
             echo "Missing Uniform scenario filter: ${SCENARIO_FILTER_UNIFORM}.yaml" >&2
@@ -348,6 +356,10 @@ run_lora_train() {
     if [ -n "$FEATURE_CACHE_PATH" ]; then
         cache_overrides+=("cache.cache_path=$FEATURE_CACHE_PATH")
     fi
+    local validation_overrides=()
+    if [ -n "$VALIDATION_FILTER" ]; then
+        validation_overrides+=("+curriculum.validation_filter=$VALIDATION_FILTER")
+    fi
 
     local cmd=(
         "$PYTHON_BIN" scripts/training/finetune_pluto.py
@@ -375,6 +387,8 @@ run_lora_train() {
         "lora.curriculum_artifact_bundle_manifest_sha256=$CURRICULUM_ARTIFACT_BUNDLE_MANIFEST_SHA256"
         "lora.execution_mode=$execution_mode"
         "lora.require_protocol_match_on_resume=$require_protocol_match"
+        "lora.preserve_l2sp_anchor_on_resume=$PRESERVE_L2SP_ANCHOR_ON_RESUME"
+        "lora.preserve_rng_state_on_resume=$PRESERVE_RNG_STATE_ON_RESUME"
         "lr=$LR"
         "weight_decay=$WEIGHT_DECAY"
         "epochs=$epochs"
@@ -388,6 +402,7 @@ run_lora_train() {
         "wandb.name=$experiment_name"
         "seed=$TRAINING_SEED"
         "${cache_overrides[@]}"
+        "${validation_overrides[@]}"
         "$@"
     )
 
@@ -498,6 +513,8 @@ main() {
     echo "PLUTO LoRA: method=$METHOD, artifact=$CURRICULUM_VERSION"
     echo "Protocol: $PROTOCOL_ID ($PROTOCOL_SHA256)"
     echo "Method config: $CFG_METHOD_PATH ($METHOD_SHA256)"
+    echo "Phase policy: $PHASE_POLICY"
+    echo "Resume continuity: L2-SP anchor=$PRESERVE_L2SP_ANCHOR_ON_RESUME, RNG=$PRESERVE_RNG_STATE_ON_RESUME"
     echo "Scheduler: $SCHEDULER_TYPE, steps=$SCHEDULER_TOTAL_STEPS, warmup=$WARMUP_STEPS, min LR=$SCHEDULER_MIN_LR, LoRA LR=$LORA_LR, head LR=$HEAD_LR"
     if [ "$CFG_METHOD_MODE" = "uniform" ]; then
         echo "Execution: continuous Uniform FT for $EPOCHS_PHASE_C epochs"

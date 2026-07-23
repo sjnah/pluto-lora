@@ -1103,6 +1103,7 @@ class CustomDataModule(pl.LightningDataModule):
         curriculum_max_cumulative_exposure_per_near_duplicate_group: int = 0,
         curriculum_accumulate_grad_batches: int = 1,
         curriculum_pacing_schedule: Optional[Dict[str, Any]] = None,
+        validation_scenarios: Optional[List[AbstractScenario]] = None,
     ) -> None:
         """
         Initialize the class.
@@ -1156,6 +1157,11 @@ class CustomDataModule(pl.LightningDataModule):
         self._curriculum_splits = curriculum_splits
         self._curriculum_weights = curriculum_weights
         self._all_scenarios_list = all_scenarios_list  # List of scenario lists, one per split
+        self._validation_scenarios = validation_scenarios
+        if validation_scenarios is not None:
+            assert len(validation_scenarios) > 0, (
+                "Dedicated validation filter returned no candidate scenarios"
+            )
         self._curriculum_replacement = curriculum_replacement
         self._curriculum_max_repeat_per_scenario = curriculum_max_repeat_per_scenario
         self._curriculum_random_seed = curriculum_random_seed
@@ -1244,8 +1250,13 @@ class CustomDataModule(pl.LightningDataModule):
                 )
 
             # Validation Dataset
+            validation_candidates = (
+                self._validation_scenarios
+                if self._validation_scenarios is not None
+                else self._all_samples
+            )
             val_samples = self._splitter.get_val_samples(
-                self._all_samples, self._worker
+                validation_candidates, self._worker
             )
             assert len(val_samples) > 0, "Splitter returned no validation samples"
 
@@ -1257,8 +1268,13 @@ class CustomDataModule(pl.LightningDataModule):
             )
         elif stage == "validate":
             # Validation Dataset
+            validation_candidates = (
+                self._validation_scenarios
+                if self._validation_scenarios is not None
+                else self._all_samples
+            )
             val_samples = self._splitter.get_val_samples(
-                self._all_samples, self._worker
+                validation_candidates, self._worker
             )
             assert len(val_samples) > 0, "Splitter returned no validation samples"
 

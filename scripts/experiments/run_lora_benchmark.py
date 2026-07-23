@@ -568,9 +568,21 @@ def exact_sampler_capacity_preflight(
     assert arm.method_values is not None
     phases = require_mapping(protocol, "phases")
     cumulative = require_mapping(phases, "cumulative_epochs")
-    proportions = require_mapping(phases, "bucket_target_proportions")
-    pacing = phases.get("pacing") or {}
-    phase_alpha = pacing.get("phase_alpha") or {}
+    proportions: dict[str, list[float]] = {}
+    phase_alpha: dict[str, dict[str, Any]] = {}
+    for phase, label in (("a", "A"), ("b", "B"), ("c", "C")):
+        parsed_proportions = yaml.safe_load(
+            str(arm.method_values[f"CFG_PHASE_{label}_TARGET_PROPORTIONS"])
+        )
+        parsed_schedule = yaml.safe_load(
+            str(arm.method_values[f"CFG_PHASE_{label}_PACING_SCHEDULE"])
+        )
+        if not isinstance(parsed_proportions, list):
+            raise ConfigError(f"Resolved phase proportions are invalid for {arm_id}:{phase}")
+        if not isinstance(parsed_schedule, dict):
+            raise ConfigError(f"Resolved phase pacing is invalid for {arm_id}:{phase}")
+        proportions[phase] = [float(value) for value in parsed_proportions]
+        phase_alpha[phase] = parsed_schedule
     boundaries = {
         "a": (0, int(cumulative["a"])),
         "b": (int(cumulative["a"]), int(cumulative["b"])),
@@ -609,8 +621,10 @@ def validate_filter_contracts(
     selected_arms: list[str],
     protocol: dict[str, Any],
 ) -> dict[str, Any]:
-    reference_tokens: Optional[set[str]] = None
-    reference_arm: Optional[str] = None
+    bucketed_reference_tokens: Optional[set[str]] = None
+    bucketed_reference_arm: Optional[str] = None
+    validation_reference_tokens: Optional[set[str]] = None
+    uniform_tokens: Optional[set[str]] = None
     summary: dict[str, Any] = {}
 
     if "uniform" in selected_arms:
@@ -618,12 +632,27 @@ def validate_filter_contracts(
         assert uniform_arm.method_values is not None
         uniform_name = str(uniform_arm.method_values["CFG_SCENARIO_FILTER_UNIFORM"])
         uniform_tokens = set(scenario_filter_tokens(uniform_name))
-        reference_tokens = uniform_tokens
-        reference_arm = "uniform"
-        summary["uniform"] = {
+        uniform_entry: dict[str, Any] = {
             "filter": uniform_name,
             "unique_scenarios": len(uniform_tokens),
+            "token_sha256": canonical_digest(sorted(uniform_tokens)),
         }
+        validation_name = str(uniform_arm.method_values["CFG_VALIDATION_FILTER"])
+        if validation_name:
+            validation_tokens = set(scenario_filter_tokens(validation_name))
+            overlap = uniform_tokens & validation_tokens
+            if overlap:
+                raise ConfigError(
+                    "Train/validation filter overlap for uniform: "
+                    f"{len(overlap)} {sorted(overlap)[:5]}"
+                )
+            validation_reference_tokens = validation_tokens
+            uniform_entry["validation_filter"] = validation_name
+            uniform_entry["validation_scenarios"] = len(validation_tokens)
+            uniform_entry["validation_token_sha256"] = canonical_digest(
+                sorted(validation_tokens)
+            )
+        summary["uniform"] = uniform_entry
 
     seen_prefixes: dict[str, tuple[set[str], list[int]]] = {}
     for arm_id in selected_arms:
@@ -652,27 +681,71 @@ def validate_filter_contracts(
             union = set().union(*bucket_sets)
             seen_prefixes[prefix] = (union, bucket_sizes)
 
-        if reference_tokens is None:
-            reference_tokens = union
-            reference_arm = arm_id
-        elif union != reference_tokens:
-            missing = sorted(reference_tokens - union)
-            extra = sorted(union - reference_tokens)
+        master_name = str(arm.method_values["CFG_BUCKET_MASTER_FILTER"])
+        master_tokens = set(scenario_filter_tokens(master_name))
+        if union != master_tokens:
+            missing = sorted(master_tokens - union)
+            extra = sorted(union - master_tokens)
             raise ConfigError(
-                f"Scenario universe mismatch: {arm_id} vs {reference_arm}; "
+                f"Bucket/master mismatch for {arm_id}: master={master_name}; "
+                f"missing={len(missing)} {missing[:5]}, extra={len(extra)} {extra[:5]}"
+            )
+        if bucketed_reference_tokens is None:
+            bucketed_reference_tokens = union
+            bucketed_reference_arm = arm_id
+        elif union != bucketed_reference_tokens:
+            missing = sorted(bucketed_reference_tokens - union)
+            extra = sorted(union - bucketed_reference_tokens)
+            raise ConfigError(
+                f"Bucketed scenario universe mismatch: {arm_id} vs "
+                f"{bucketed_reference_arm}; "
                 f"missing={len(missing)} {missing[:5]}, extra={len(extra)} {extra[:5]}"
             )
 
         entry: dict[str, Any] = {
             "filter_prefix": prefix,
+            "bucket_master_filter": master_name,
             "bucket_sizes": bucket_sizes,
             "unique_scenarios": len(union),
+            "token_sha256": canonical_digest(sorted(union)),
         }
+        validation_name = str(arm.method_values["CFG_VALIDATION_FILTER"])
+        if validation_name:
+            validation_tokens = set(scenario_filter_tokens(validation_name))
+            overlap = union & validation_tokens
+            if overlap:
+                raise ConfigError(
+                    f"Train/validation filter overlap for {arm_id}: "
+                    f"{len(overlap)} {sorted(overlap)[:5]}"
+                )
+            if validation_reference_tokens is None:
+                validation_reference_tokens = validation_tokens
+            elif validation_tokens != validation_reference_tokens:
+                raise ConfigError(
+                    f"Validation universe mismatch for trainable arm {arm_id}"
+                )
+            entry["validation_filter"] = validation_name
+            entry["validation_scenarios"] = len(validation_tokens)
+            entry["validation_token_sha256"] = canonical_digest(
+                sorted(validation_tokens)
+            )
         if arm.sampler_contract == "exact_bucket_quota":
             entry["epoch_plan"] = exact_sampler_capacity_preflight(
                 arm_id, arm, bucket_sizes, protocol
             )
         summary[arm_id] = entry
+    if (
+        uniform_tokens is not None
+        and bucketed_reference_tokens is not None
+        and uniform_tokens != bucketed_reference_tokens
+    ):
+        missing = sorted(uniform_tokens - bucketed_reference_tokens)
+        extra = sorted(bucketed_reference_tokens - uniform_tokens)
+        raise ConfigError(
+            "Uniform/bucketed scenario universe mismatch; "
+            f"missing_from_bucketed={len(missing)} {missing[:5]}, "
+            f"extra_in_bucketed={len(extra)} {extra[:5]}"
+        )
     return summary
 
 
@@ -683,6 +756,7 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     training = require_mapping(payload, "training")
     evaluation = require_mapping(payload, "evaluation")
     arms_payload = require_mapping(payload, "arms")
+    filter_variants = require_mapping(payload, "filter_variants")
 
     mode = require_choice(workflow.get("mode"), WORKFLOW_MODES, "workflow.mode")
     interleave_evaluation_by_seed = require_bool(
@@ -731,13 +805,35 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     pretrained_checkpoint = resolve_path(
         training.get("pretrained_checkpoint"), label="training.pretrained_checkpoint"
     )
+    filter_variant = require_id(
+        training.get("filter_variant"), "training.filter_variant"
+    )
+    variant_payload = filter_variants.get(filter_variant)
+    if not isinstance(variant_payload, dict):
+        raise ConfigError(
+            f"training.filter_variant refers to an undefined variant: {filter_variant}"
+        )
+    variant_suffix_raw = variant_payload.get("run_suffix")
+    variant_run_suffix = (
+        require_id(variant_suffix_raw, f"filter_variants.{filter_variant}.run_suffix")
+        if variant_suffix_raw
+        else ""
+    )
+    method_config_overrides = variant_payload.get("method_configs") or {}
+    if not isinstance(method_config_overrides, dict):
+        raise ConfigError(
+            f"filter_variants.{filter_variant}.method_configs must be a mapping"
+        )
 
     resolved_arms: dict[str, ResolvedArm] = {}
     for arm_id in selected_arms:
         raw = arms_payload.get(arm_id)
         if not isinstance(raw, dict):
             raise ConfigError(f"Selected arm is missing or not a mapping: {arm_id}")
-        resolved_arms[arm_id] = validate_arm(arm_id, raw, protocol_path)
+        selected_raw = dict(raw)
+        if arm_id in method_config_overrides:
+            selected_raw["method_config"] = method_config_overrides[arm_id]
+        resolved_arms[arm_id] = validate_arm(arm_id, selected_raw, protocol_path)
 
     skip_completed_evaluation = bool(
         evaluation.get("skip_completed_same_version_seed", False)
@@ -784,6 +880,8 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
             raise ConfigError("llm_exact_off/on must differ in routing mode")
         matched_keys = (
             "CFG_FILTER_PREFIX",
+            "CFG_BUCKET_MASTER_FILTER",
+            "CFG_VALIDATION_FILTER",
             "CFG_SCORE_METHOD",
             "CFG_CURRICULUM_METHOD",
             "CFG_SAMPLER_MODE",
@@ -793,6 +891,7 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
             "CFG_NEAR_DUPLICATE_GROUP_WEIGHTING",
             "CFG_MAX_CUMULATIVE_EXPOSURE_PER_SCENARIO",
             "CFG_MAX_CUMULATIVE_EXPOSURE_PER_NEAR_DUPLICATE_GROUP",
+            "CFG_TYPE_ROUTING_METADATA_PATH",
         )
         mismatched = [
             key
@@ -832,10 +931,8 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
         "feature_cache_name": feature_cache_name,
         "pretrained_checkpoint": pretrained_checkpoint,
         "retrain_tag": training.get("retrain_tag"),
-        "use_ema_checkpoint": require_bool(
-            evaluation.get("use_ema_checkpoint", False),
-            "evaluation.use_ema_checkpoint",
-        ),
+        "filter_variant": filter_variant,
+        "filter_variant_run_suffix": variant_run_suffix,
         "require_completed_checkpoint": bool(
             evaluation.get("require_completed_checkpoint", True)
         ),
@@ -852,11 +949,7 @@ def validate_suite(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def checkpoint_candidates(
-    experiment_dir: Path, *, use_ema_checkpoint: bool = False
-) -> list[Path]:
-    if use_ema_checkpoint:
-        return [experiment_dir / "lora_checkpoints/merged_final_ema.ckpt"]
+def checkpoint_candidates(experiment_dir: Path) -> list[Path]:
     return [
         experiment_dir / "lora_checkpoints/merged_final.ckpt",
         experiment_dir / "checkpoints/last.ckpt",
@@ -911,7 +1004,6 @@ def discover_checkpoint(
     method_sha256: str,
     execution_mode: str,
     artifact_bundle_id: str = "",
-    use_ema_checkpoint: bool = False,
 ) -> Optional[Path]:
     output_root = PLUTO_ROOT / "outputs"
     if not output_root.is_dir():
@@ -930,9 +1022,7 @@ def discover_checkpoint(
             continue
         candidates.extend(
             path
-            for path in checkpoint_candidates(
-                experiment_dir, use_ema_checkpoint=use_ema_checkpoint
-            )
+            for path in checkpoint_candidates(experiment_dir)
             if path.is_file()
         )
     if not candidates:
@@ -1126,6 +1216,10 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
                 protocol_id=protocol_id,
                 seed=seed,
             )
+            if validated["filter_variant_run_suffix"]:
+                suffix = validated["filter_variant_run_suffix"]
+                base = f"{base}_{suffix}"
+                slug = f"{slug}_{suffix}"
             final_exp = final_experiment_name(base, arm)
             override = checkpoint_override(overrides, arm_id, seed)
             execution_mode = (
@@ -1159,10 +1253,7 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
                 method_sha256=arm.method_values["CFG_METHOD_SHA256"],
                 execution_mode=execution_mode,
                 artifact_bundle_id=artifact_bundle_id,
-                use_ema_checkpoint=validated["use_ema_checkpoint"],
             )
-            if validated["use_ema_checkpoint"]:
-                slug = f"{slug}_ema"
             runs.append(
                 {
                     "arm_id": arm_id,
@@ -1180,9 +1271,7 @@ def build_runs(validated: dict[str, Any]) -> list[dict[str, Any]]:
                     "evaluation_slug": slug,
                     "checkpoint": str(discovered) if discovered else None,
                     "checkpoint_source": "override" if override else ("discovered" if discovered else None),
-                    "checkpoint_variant": (
-                        "ema" if validated["use_ema_checkpoint"] else "standard"
-                    ),
+                    "checkpoint_variant": "standard",
                     "training_status": "pending",
                     "evaluation_status": {},
                 }
@@ -1393,7 +1482,6 @@ def train_one(
             if arm.method == "llm" and validated.get("artifact_bundle")
             else ""
         ),
-        use_ema_checkpoint=validated["use_ema_checkpoint"],
     )
     if checkpoint is None:
         raise RuntimeError(
@@ -1632,7 +1720,7 @@ def manifest_payload(
             ],
             "checkpoint_policy": validated["checkpoint_policy"],
             "resume_policy": validated["resume_policy"],
-            "use_ema_checkpoint": validated["use_ema_checkpoint"],
+            "filter_variant": validated["filter_variant"],
             "skip_completed_same_version_seed": validated[
                 "skip_completed_same_version_seed"
             ],

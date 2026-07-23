@@ -33,17 +33,17 @@ phases:
     # Phase A: short easy warm-up before the hard-focused ramp.
     a: [0.333333333333, 0.333333333333, 0.333333333334]
     # Phase B is overridden per epoch by phases.pacing.phase_alpha.b.
-    # This static value is the final alpha=0.8 target and acts as fallback.
-    b: [0.066666666667, 0.066666666667, 0.866666666666]
-    # Phase C keeps 20% uniform replay and 80% hard-prior mass:
-    # q=(1-alpha)U+alpha H, alpha=0.8, U=[1/3,1/3,1/3], H=[0,0,1].
-    c: [0.066666666667, 0.066666666667, 0.866666666666]
+    # This static value is the final alpha=0.4 target and acts as fallback.
+    b: [0.2, 0.2, 0.6]
+    # Phase C keeps 60% uniform replay and 40% hard-prior mass:
+    # q=(1-alpha)U+alpha H, alpha=0.4, U=[1/3,1/3,1/3], H=[0,0,1].
+    c: [0.2, 0.2, 0.6]
   pacing:
     phase_alpha:
       b:
         type: hard_replay_ramp
         alpha_start: 0.0
-        alpha_end: 0.8
+        alpha_end: 0.4
         ramp_epochs: 8
         uniform_prior: [0.333333333333, 0.333333333333, 0.333333333334]
         hard_prior: [0.0, 0.0, 1.0]
@@ -66,3 +66,7 @@ training:
 
 checkpoint:
   require_protocol_match_on_resume: true
+  # Staged A/B/C runs must retain the same regularization reference and random
+  # streams instead of silently rebuilding them at every process boundary.
+  preserve_l2sp_anchor_on_resume: true
+  preserve_rng_state_on_resume: true

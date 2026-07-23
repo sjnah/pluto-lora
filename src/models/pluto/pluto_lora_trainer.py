@@ -9,8 +9,10 @@ This module provides:
 """
 
 import logging
-from typing import Dict, Optional, Tuple, Union
+import random
+from typing import Any, Dict, Optional, Tuple, Union
 
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -87,6 +89,8 @@ class PLUTOLoRATrainer(LightningTrainer):
         curriculum_artifact_bundle_id: str = "",
         curriculum_artifact_bundle_manifest_sha256: str = "",
         require_protocol_match_on_resume: bool = False,
+        preserve_l2sp_anchor_on_resume: bool = False,
+        preserve_rng_state_on_resume: bool = False,
         # Training stability
         gradient_clip_val: float = 1.0,
         skip_nan_steps: bool = True,
@@ -184,6 +188,12 @@ class PLUTOLoRATrainer(LightningTrainer):
         self.require_protocol_match_on_resume = bool(
             require_protocol_match_on_resume
         )
+        self.preserve_l2sp_anchor_on_resume = bool(
+            preserve_l2sp_anchor_on_resume
+        )
+        self.preserve_rng_state_on_resume = bool(preserve_rng_state_on_resume)
+        self._restored_l2sp_anchor: Optional[Dict[str, torch.Tensor]] = None
+        self._restored_rng_state: Optional[Dict[str, Any]] = None
         if self.scheduler_horizon_epochs is not None:
             if self.scheduler_horizon_epochs <= 0:
                 raise ValueError("scheduler_horizon_epochs must be positive")
@@ -258,6 +268,9 @@ class PLUTOLoRATrainer(LightningTrainer):
             self.pretrained_head_state = {}
             expected_params = ['.mlp.0.bias', '.mlp.1.weight', '.mlp.1.bias', '.mlp.3.bias']
             found_params = {pattern: [] for pattern in expected_params}
+            restored_anchor = self._restored_l2sp_anchor
+            restored_names = set(restored_anchor or {})
+            expected_anchor_names = set()
             
             for name, param in self.model.named_parameters():
                 if param.requires_grad:
@@ -266,11 +279,34 @@ class PLUTOLoRATrainer(LightningTrainer):
                     if is_head:
                         for pattern in expected_params:
                             if pattern in name:
-                                self.pretrained_head_state[name] = param.data.clone().detach()
+                                expected_anchor_names.add(name)
+                                if restored_anchor is None:
+                                    anchor = param.data
+                                else:
+                                    if name not in restored_anchor:
+                                        raise RuntimeError(
+                                            "Restored L2-SP anchor is missing parameter: "
+                                            f"{name}"
+                                        )
+                                    anchor = restored_anchor[name]
+                                self.pretrained_head_state[name] = (
+                                    anchor.to(device=param.device, dtype=param.dtype)
+                                    .clone()
+                                    .detach()
+                                )
                                 found_params[pattern].append(name)
                                 break
+            unexpected_anchor_names = restored_names - expected_anchor_names
+            if unexpected_anchor_names:
+                raise RuntimeError(
+                    "Restored L2-SP anchor has unexpected parameters: "
+                    f"{sorted(unexpected_anchor_names)[:5]}"
+                )
+            self._restored_l2sp_anchor = None
             
             logger.info(f"✓ Saved pretrained state for {len(self.pretrained_head_state)} head parameters (L2-SP)")
+            if restored_anchor is not None:
+                logger.info("  ✓ Restored the original L2-SP anchor from checkpoint")
             logger.info(f"  L2-SP parameter breakdown:")
             for pattern, names in found_params.items():
                 logger.info(f"    {pattern}: {len(names)} params")
@@ -293,6 +329,10 @@ class PLUTOLoRATrainer(LightningTrainer):
 
         self._reset_live_optimizer_moments_if_requested()
         self._validate_scheduler_horizon()
+        if self._restored_rng_state is not None:
+            self._restore_rng_state(self._restored_rng_state)
+            self._restored_rng_state = None
+            logger.info("✓ Restored Python/NumPy/Torch RNG state from checkpoint")
     
     def training_step(
         self,
@@ -696,6 +736,27 @@ class PLUTOLoRATrainer(LightningTrainer):
         """
         self._validate_checkpoint_protocol(checkpoint)
 
+        if self.preserve_l2sp_anchor_on_resume:
+            anchor = checkpoint.get("lora_l2sp_anchor")
+            if not isinstance(anchor, dict) or not anchor:
+                raise RuntimeError(
+                    "Resume checkpoint has no persisted L2-SP anchor"
+                )
+            if not all(
+                isinstance(name, str) and isinstance(value, torch.Tensor)
+                for name, value in anchor.items()
+            ):
+                raise RuntimeError("Resume checkpoint has an invalid L2-SP anchor")
+            self._restored_l2sp_anchor = {
+                name: value.detach().cpu().clone() for name, value in anchor.items()
+            }
+
+        if self.preserve_rng_state_on_resume:
+            rng_state = checkpoint.get("lora_rng_state")
+            if not isinstance(rng_state, dict):
+                raise RuntimeError("Resume checkpoint has no persisted RNG state")
+            self._restored_rng_state = rng_state
+
         if self.is_curriculum_stage:
             logger.info("🔄 Curriculum stage detected: Skipping optimizer state loading")
             # Remove optimizer and lr_scheduler states to force re-initialization
@@ -725,6 +786,15 @@ class PLUTOLoRATrainer(LightningTrainer):
 
     def on_save_checkpoint(self, checkpoint: Dict) -> None:
         """Persist the resolved protocol identity used for safe phase resume."""
+        if self.preserve_l2sp_anchor_on_resume:
+            if not self.pretrained_head_state:
+                raise RuntimeError("Cannot checkpoint before initializing the L2-SP anchor")
+            checkpoint["lora_l2sp_anchor"] = {
+                name: value.detach().cpu().clone()
+                for name, value in self.pretrained_head_state.items()
+            }
+        if self.preserve_rng_state_on_resume:
+            checkpoint["lora_rng_state"] = self._capture_rng_state()
         checkpoint["lora_training_protocol"] = {
             "protocol_id": self.training_protocol_id,
             "protocol_sha256": self.training_protocol_sha256,
@@ -738,6 +808,10 @@ class PLUTOLoRATrainer(LightningTrainer):
             "scheduler_horizon_epochs": self.scheduler_horizon_epochs,
             "scheduler_total_steps": self.scheduler_total_steps,
             "scheduler_min_lr": self.scheduler_min_lr,
+            "preserve_l2sp_anchor_on_resume": (
+                self.preserve_l2sp_anchor_on_resume
+            ),
+            "preserve_rng_state_on_resume": self.preserve_rng_state_on_resume,
         }
 
     def _validate_checkpoint_protocol(self, checkpoint: Dict) -> None:
@@ -765,6 +839,12 @@ class PLUTOLoRATrainer(LightningTrainer):
             ),
             "scheduler_total_steps": getattr(self, "scheduler_total_steps", None),
             "scheduler_min_lr": getattr(self, "scheduler_min_lr", 1e-6),
+            "preserve_l2sp_anchor_on_resume": getattr(
+                self, "preserve_l2sp_anchor_on_resume", False
+            ),
+            "preserve_rng_state_on_resume": getattr(
+                self, "preserve_rng_state_on_resume", False
+            ),
         }
         if not expected["artifact_bundle_id"]:
             expected.pop("artifact_bundle_id")
@@ -779,6 +859,39 @@ class PLUTOLoRATrainer(LightningTrainer):
                 "Resume checkpoint training protocol mismatch: "
                 f"{mismatches}"
             )
+
+    @staticmethod
+    def _capture_rng_state() -> Dict[str, Any]:
+        """Capture all process-local RNG streams used by staged training."""
+        return {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch_cpu": torch.get_rng_state(),
+            "torch_cuda": (
+                torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []
+            ),
+        }
+
+    @staticmethod
+    def _restore_rng_state(state: Dict[str, Any]) -> None:
+        """Restore a checkpointed process-local RNG state exactly."""
+        required = {"python", "numpy", "torch_cpu", "torch_cuda"}
+        missing = required - set(state)
+        if missing:
+            raise RuntimeError(f"Persisted RNG state is missing: {sorted(missing)}")
+        random.setstate(state["python"])
+        np.random.set_state(tuple(state["numpy"]))
+        torch.set_rng_state(state["torch_cpu"].cpu())
+        cuda_states = list(state["torch_cuda"])
+        if cuda_states:
+            if not torch.cuda.is_available():
+                raise RuntimeError("Checkpoint has CUDA RNG state but CUDA is unavailable")
+            if len(cuda_states) != torch.cuda.device_count():
+                raise RuntimeError(
+                    "CUDA RNG device-count mismatch: "
+                    f"checkpoint={len(cuda_states)}, runtime={torch.cuda.device_count()}"
+                )
+            torch.cuda.set_rng_state_all([value.cpu() for value in cuda_states])
 
     @staticmethod
     def _clear_live_optimizer_moments(optimizers) -> int:

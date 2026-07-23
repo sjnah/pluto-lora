@@ -6,6 +6,7 @@ from shutil import rmtree
 from typing import cast
 
 import pytorch_lightning as pl
+import yaml
 from hydra.utils import instantiate
 from nuplan.planning.script.builders.data_augmentation_builder import (
     build_agent_augmentor,
@@ -97,6 +98,60 @@ class TrainingEngine:
         return f"<{type(self).__module__}.{type(self).__qualname__} object at {hex(id(self))}>"
 
 
+def _scenario_filter_config_dir(cfg: DictConfig) -> Path:
+    """Resolve the scenario-filter directory used by curriculum side inputs."""
+    config_dir = None
+    if (
+        hasattr(cfg, "hydra")
+        and hasattr(cfg.hydra, "runtime")
+        and hasattr(cfg.hydra.runtime, "config_dir")
+    ):
+        config_dir = Path(cfg.hydra.runtime.config_dir)
+
+    if config_dir is None or not config_dir.exists():
+        if hasattr(cfg, "hydra") and hasattr(cfg.hydra, "searchpath"):
+            for searchpath in cfg.hydra.searchpath:
+                if "file://" in str(searchpath):
+                    candidate = Path(str(searchpath).replace("file://", ""))
+                    if candidate.exists():
+                        config_dir = candidate
+                        break
+
+    if config_dir is None or not config_dir.exists():
+        candidate = Path("./config")
+        if candidate.exists():
+            config_dir = candidate.resolve()
+
+    if config_dir is None or not config_dir.exists():
+        candidate = Path(__file__).parent.parent.parent / "config"
+        if candidate.exists():
+            config_dir = candidate
+
+    if config_dir is None or not config_dir.exists():
+        raise FileNotFoundError("Could not resolve the PLUTO config directory")
+    return config_dir
+
+
+def _build_scenarios_for_filter(
+    cfg: DictConfig,
+    filter_name: str,
+    worker: WorkerPool,
+    model: TorchModuleWrapper,
+) -> list:
+    """Build scenarios from a named side-input filter without changing cfg."""
+    config_dir = _scenario_filter_config_dir(cfg)
+    filter_path = config_dir / "scenario_filter" / f"{filter_name}.yaml"
+    if not filter_path.is_file():
+        raise FileNotFoundError(f"Could not find scenario_filter: {filter_path}")
+    filter_config = yaml.safe_load(filter_path.read_text(encoding="utf-8"))
+    temp_cfg = OmegaConf.create(cfg)
+    OmegaConf.set_struct(temp_cfg, False)
+    temp_cfg.scenario_filter = OmegaConf.create(filter_config)
+    OmegaConf.set_struct(temp_cfg, True)
+    logger.info("Loading scenario_filter from: %s", filter_path)
+    return build_scenarios(temp_cfg, worker, model)
+
+
 def build_lightning_datamodule(
     cfg: DictConfig, worker: WorkerPool, model: TorchModuleWrapper
 ) -> pl.LightningDataModule:
@@ -141,76 +196,9 @@ def build_lightning_datamodule(
         
         all_scenarios_list = []
         for split_name in curriculum_splits:
-            # Create a temporary config with this split's scenario_filter
-            temp_cfg = OmegaConf.create(cfg)
-            OmegaConf.set_struct(temp_cfg, False)
-            
-            # Load scenario_filter config file directly
-            import yaml
-            # Try to find config directory
-            config_dir = None
-            
-            # First, try to get from hydra runtime config_dir
-            if hasattr(cfg, 'hydra') and hasattr(cfg.hydra, 'runtime') and hasattr(cfg.hydra.runtime, 'config_dir'):
-                config_dir = Path(cfg.hydra.runtime.config_dir)
-                logger.info(f"  Using config_dir from hydra.runtime: {config_dir}")
-            
-            # Second, try to extract from searchpath
-            if config_dir is None or not config_dir.exists():
-                if hasattr(cfg, 'hydra') and hasattr(cfg.hydra, 'searchpath'):
-                    for searchpath in cfg.hydra.searchpath:
-                        if 'file://' in str(searchpath):
-                            candidate_dir = Path(str(searchpath).replace('file://', ''))
-                            if candidate_dir.exists():
-                                config_dir = candidate_dir
-                                logger.info(f"  Using config_dir from searchpath: {config_dir}")
-                                break
-            
-            # Third, try relative path from current working directory
-            if config_dir is None or not config_dir.exists():
-                candidate_dir = Path("./config")
-                if candidate_dir.exists():
-                    config_dir = candidate_dir.resolve()
-                    logger.info(f"  Using relative config_dir: {config_dir}")
-            
-            # Fourth, try absolute path based on script location
-            if config_dir is None or not config_dir.exists():
-                # Try to find pluto/config directory
-                script_dir = Path(__file__).parent.parent.parent  # Go up from src/custom_training to pluto
-                candidate_dir = script_dir / "config"
-                if candidate_dir.exists():
-                    config_dir = candidate_dir
-                    logger.info(f"  Using script-based config_dir: {config_dir}")
-            
-            if config_dir is None or not config_dir.exists():
-                raise FileNotFoundError(
-                    f"Could not find config directory. Tried:\n"
-                    f"  - hydra.runtime.config_dir: {getattr(getattr(getattr(cfg, 'hydra', None), 'runtime', None), 'config_dir', None)}\n"
-                    f"  - searchpath: {getattr(getattr(cfg, 'hydra', None), 'searchpath', None)}\n"
-                    f"  - ./config (relative)\n"
-                    f"  - {Path(__file__).parent.parent.parent / 'config'}"
-                )
-            
-            filter_config_path = config_dir / "scenario_filter" / f"{split_name}.yaml"
-            
-            if not filter_config_path.exists():
-                raise FileNotFoundError(
-                    f"Could not find scenario_filter config for {split_name} at {filter_config_path}. "
-                    f"Config directory: {config_dir} (exists: {config_dir.exists()})"
-                )
-            
-            logger.info(f"  Loading scenario_filter from: {filter_config_path}")
-            
-            # Load the scenario_filter config
-            with open(filter_config_path, 'r') as f:
-                filter_config = yaml.safe_load(f)
-            
-            # Convert to OmegaConf DictConfig
-            temp_cfg.scenario_filter = OmegaConf.create(filter_config)
-            OmegaConf.set_struct(temp_cfg, True)
-            
-            # Load scenarios for this split
-            split_scenarios = build_scenarios(temp_cfg, worker, model)
+            split_scenarios = _build_scenarios_for_filter(
+                cfg, str(split_name), worker, model
+            )
             all_scenarios_list.append(split_scenarios)
             logger.info(f"  ✓ Loaded {len(split_scenarios)} scenarios from split: {split_name}")
         
@@ -224,6 +212,18 @@ def build_lightning_datamodule(
         # Normal mode: single split
         scenarios = build_scenarios(cfg, worker, model)
 
+    validation_scenarios = None
+    validation_filter = curriculum_cfg.get("validation_filter", None)
+    if validation_filter:
+        validation_scenarios = _build_scenarios_for_filter(
+            cfg, str(validation_filter), worker, model
+        )
+        logger.info(
+            "Loaded %d dedicated validation candidates from %s",
+            len(validation_scenarios),
+            validation_filter,
+        )
+
     # Create datamodule
     datamodule: pl.LightningDataModule = CustomDataModule(
         feature_preprocessor=feature_preprocessor,
@@ -236,6 +236,7 @@ def build_lightning_datamodule(
         curriculum_splits=curriculum_splits,
         curriculum_weights=curriculum_weights,
         all_scenarios_list=all_scenarios_list,
+        validation_scenarios=validation_scenarios,
         curriculum_replacement=bool(curriculum_cfg.get("replacement", True)),
         curriculum_max_repeat_per_scenario=int(curriculum_cfg.get("max_repeat_per_scenario", 0)),
         curriculum_random_seed=int(curriculum_cfg.get("random_seed", cfg.get("seed", 42))),

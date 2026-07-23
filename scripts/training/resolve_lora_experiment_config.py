@@ -111,6 +111,9 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
     training = require_mapping(protocol, "training")
     checkpoint = require_mapping(protocol, "checkpoint")
     phase_names = require_mapping(method, "phase_names")
+    phase_policy = str(method.get("phase_policy", "protocol"))
+    if phase_policy not in {"protocol", "uniform_all_epochs"}:
+        raise ValueError(f"Unsupported phase_policy: {phase_policy}")
     exposure = method.get("exposure") or {}
     if not isinstance(exposure, dict):
         raise ValueError("method exposure must be a mapping")
@@ -126,6 +129,16 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         )
     if master_filter:
         master_filter = require_id(master_filter, "bucket_master_filter")
+    validation_filter = str(method.get("validation_filter", ""))
+    if validation_filter:
+        validation_filter = require_id(validation_filter, "validation_filter")
+
+    resolved_proportions = dict(proportions)
+    resolved_phase_alpha = dict(phase_alpha)
+    if phase_policy == "uniform_all_epochs":
+        uniform = [0.333333333333, 0.333333333333, 0.333333333334]
+        resolved_proportions = {phase: list(uniform) for phase in ("a", "b", "c")}
+        resolved_phase_alpha = {}
 
     epoch_a = int(cumulative["a"])
     epoch_b = int(cumulative["b"])
@@ -187,17 +200,24 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_EPOCHS_PHASE_B": epoch_b,
         "CFG_EPOCHS_PHASE_C": epoch_c,
         "CFG_PHASE_A_TARGET_PROPORTIONS": list_literal(
-            proportions["a"], "phase A proportions"
+            resolved_proportions["a"], "phase A proportions"
         ),
         "CFG_PHASE_B_TARGET_PROPORTIONS": list_literal(
-            proportions["b"], "phase B proportions"
+            resolved_proportions["b"], "phase B proportions"
         ),
         "CFG_PHASE_C_TARGET_PROPORTIONS": list_literal(
-            proportions["c"], "phase C proportions"
+            resolved_proportions["c"], "phase C proportions"
         ),
-        "CFG_PHASE_A_PACING_SCHEDULE": hydra_literal(phase_alpha.get("a") or {}),
-        "CFG_PHASE_B_PACING_SCHEDULE": hydra_literal(phase_alpha.get("b") or {}),
-        "CFG_PHASE_C_PACING_SCHEDULE": hydra_literal(phase_alpha.get("c") or {}),
+        "CFG_PHASE_A_PACING_SCHEDULE": hydra_literal(
+            resolved_phase_alpha.get("a") or {}
+        ),
+        "CFG_PHASE_B_PACING_SCHEDULE": hydra_literal(
+            resolved_phase_alpha.get("b") or {}
+        ),
+        "CFG_PHASE_C_PACING_SCHEDULE": hydra_literal(
+            resolved_phase_alpha.get("c") or {}
+        ),
+        "CFG_PHASE_POLICY": phase_policy,
         "CFG_LORA_ENABLED": bool(lora["enabled"]),
         "CFG_LORA_RANK": int(lora["rank"]),
         "CFG_LORA_ALPHA": float(lora["alpha"]),
@@ -214,6 +234,12 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         "CFG_NUM_SANITY_VAL_STEPS": int(training["num_sanity_val_steps"]),
         "CFG_REQUIRE_PROTOCOL_MATCH_ON_RESUME": bool(
             checkpoint["require_protocol_match_on_resume"]
+        ),
+        "CFG_PRESERVE_L2SP_ANCHOR_ON_RESUME": bool(
+            checkpoint.get("preserve_l2sp_anchor_on_resume", False)
+        ),
+        "CFG_PRESERVE_RNG_STATE_ON_RESUME": bool(
+            checkpoint.get("preserve_rng_state_on_resume", False)
         ),
         "CFG_METHOD_PATH": str(method_file),
         "CFG_METHOD_SHA256": digest(method),
@@ -237,6 +263,7 @@ def resolve_protocol_method(protocol_path: str, method_path: str) -> dict[str, A
         ),
         "CFG_BUCKET_CARDINALITY_CONTRACT": cardinality_contract,
         "CFG_BUCKET_MASTER_FILTER": master_filter,
+        "CFG_VALIDATION_FILTER": validation_filter,
         "CFG_PHASE_A_NAME": str(phase_names["a"]),
         "CFG_PHASE_B_NAME": str(phase_names["b"]),
         "CFG_PHASE_C_NAME": str(phase_names["c"]),
