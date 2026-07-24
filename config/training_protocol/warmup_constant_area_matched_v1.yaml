@@ -1,4 +1,4 @@
-protocol_id: flat_area_matched_v1
+protocol_id: warmup_constant_area_matched_v1
 
 runtime:
   # Shared feature cache identity for every method and seed using this protocol.
@@ -9,12 +9,12 @@ runtime:
 # Lightning boundaries. All methods use the same optimizer-step-indexed LR
 # trajectory so curriculum sample order is compared under an identical LR.
 schedule:
-  type: warmup_cosine
+  type: warmup_constant
   horizon_epochs: 12
   total_steps: 804
-  warmup_steps: 100
-  lora_lr: 5.0e-5
-  head_lr: 1.0e-5
+  warmup_steps: 32
+  lora_lr: 2.593849080532655e-5
+  head_lr: 5.18769816106531e-6
   min_lr: 1.0e-6
 
 optimizer:
@@ -33,11 +33,11 @@ phases:
     # Phase A: short easy warm-up before the hard-focused ramp.
     a: [0.333333333333, 0.333333333333, 0.333333333334]
     # Phase B is overridden per epoch by phases.pacing.phase_alpha.b.
-    # This static value is the final alpha=0.4 target and acts as fallback.
-    b: [0.2, 0.2, 0.6]
+    # This static value is the final alpha=0.8 target and acts as fallback.
+    b: [0.066666666667, 0.066666666667, 0.866666666666]
     # Phase C keeps 60% uniform replay and 40% hard-prior mass:
-    # q=(1-alpha)U+alpha H, alpha=0.4, U=[1/3,1/3,1/3], H=[0,0,1].
-    c: [0.2, 0.2, 0.6]
+    # q=(1-alpha)U+alpha H, alpha=0.8, U=[1/3,1/3,1/3], H=[0,0.3,0.7].
+    c: [0.066666666667, 0.066666666667, 0.866666666666]
   pacing:
     phase_alpha:
       b:

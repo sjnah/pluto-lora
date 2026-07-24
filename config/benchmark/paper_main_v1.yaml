@@ -24,27 +24,25 @@ filter_variants:
 
 workflow:
   mode: train_and_evaluate # train_and_evaluate | train_only | evaluate_only
-  interleave_evaluation_by_seed: false # true: train1/test1/train2/test2, false: train-all/test-all
+  interleave_evaluation_by_seed: true # true: train1/test1/train2/test2, false: train-all/test-all
   continue_on_failure: false
   dry_run: false
 
 selection:
   arms:
     # - zero_shot
-    # - uniform
-    - staged_uniform_exact
-    # - random_exact
-    - rule_raw_exact
-    - loss_exact
-    # - mpoc_exact
-    # - llm_exact_off
-    # - llm_exact_on
-  seeds: [1,2,3,4,5] # [1,2,3,4,5]
+    # - uniform 1
+    # - random_exact 1
+    # - rule_raw_exact 2
+    # - loss_exact 2
+    # - mpoc_exact 3
+    # - llm_exact_off 4
+    # - llm_exact_on 3
+  seeds: [1,2,3,4,5,6,7,8,9,10] # [1,2,3,4,5]
   use_priority_benchmark_order: true # false: listed order, true: InterPlan/fast-first order
   benchmarks:
     # - val14 # 1h?
-    # - val14-fast # 18m
-    # - test14-hard # 16m
+    - test14-hard # 16m
     - interplan10 # 8m
 
 training:
@@ -76,29 +74,18 @@ arms:
     kind: trainable
     label: Uniform FT
     method: uniform
-    artifact_version: v1.25.3
+    artifact_version: v1.27.0
     method_config: config/curriculum_method/uniform.yaml
     sampler_contract: uniform
     routing_mode: "off"
     experiment_base_template: uniform_{artifact_version}_{protocol_id}_seed{seed}
     evaluation_slug_template: uniform_{artifact_version}_{protocol_id}_seed{seed}
 
-  staged_uniform_exact:
-    kind: trainable
-    label: Staged Uniform exact
-    method: staged_uniform_exact
-    artifact_version: v1.26.1
-    method_config: config/curriculum_method/staged_uniform_exact.yaml
-    sampler_contract: exact_bucket_quota
-    routing_mode: "off"
-    experiment_base_template: staged_uniform_exact_{artifact_version}_{protocol_id}_seed{seed}
-    evaluation_slug_template: staged_uniform_exact_{artifact_version}_{protocol_id}_seed{seed}
-
   random_exact:
     kind: trainable
     label: RandomBucket exact
     method: random
-    artifact_version: v1.26.1
+    artifact_version: v1.27.0
     method_config: config/curriculum_method/random.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -109,7 +96,7 @@ arms:
     kind: trainable
     label: Rule-Raw exact
     method: rule_raw
-    artifact_version: v1.26.1
+    artifact_version: v1.27.0
     method_config: config/curriculum_method/rule_raw.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -120,7 +107,7 @@ arms:
     kind: trainable
     label: Loss-ranked exact
     method: loss
-    artifact_version: v1.26.1
+    artifact_version: v1.27.0
     method_config: config/curriculum_method/loss.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -131,7 +118,7 @@ arms:
     kind: trainable
     label: MPOC exact
     method: mpoc
-    artifact_version: v1.26.1
+    artifact_version: v1.27.0
     method_config: config/curriculum_method/mpoc.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -142,7 +129,7 @@ arms:
     kind: trainable
     label: LLM exact (type-off)
     method: llm
-    artifact_version: v5.0.5.0.26.1
+    artifact_version: v5.0.5.0.27.0
     method_config: config/curriculum_method/llm_exact_off.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "off"
@@ -153,7 +140,7 @@ arms:
     kind: trainable
     label: LLM exact (type-on, paired minimal delta)
     method: llm
-    artifact_version: v5.0.5.0.26.1
+    artifact_version: v5.0.5.0.27.0
     method_config: config/curriculum_method/llm_exact_on.yaml
     sampler_contract: exact_bucket_quota
     routing_mode: "on"

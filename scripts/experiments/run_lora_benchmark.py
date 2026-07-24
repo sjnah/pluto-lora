@@ -1626,10 +1626,17 @@ def evaluation_method_environment(run: dict[str, Any]) -> dict[str, str]:
         "rule_raw": ("RUN_RULE_RAW", "RULE_RAW"),
         "loss": ("RUN_LOSS_BASED", "LOSS"),
         "uniform": ("RUN_UNIFORM", "UNIFORM"),
+        # This control is trained through the staged exact-sampler path, but it
+        # is still a Uniform model at evaluation time. PLUTO_EVAL_CHECKPOINT
+        # pins the actual checkpoint; this slot only selects the evaluator's
+        # Uniform label/slug/experiment environment contract.
+        "staged_uniform_exact": ("RUN_UNIFORM", "UNIFORM"),
         "random": ("RUN_RANDOM_BUCKET", "RANDOM_BUCKET"),
         "llm": ("RUN_LLM_CURRICULUM", "LLM"),
         "mpoc": ("RUN_MPOC", "MPOC"),
     }
+    if method not in mapping:
+        raise ConfigError(f"No evaluation environment mapping for method={method!r}")
     flag, prefix = mapping[method]
     updates[flag] = "true"
     updates[f"{prefix}_CURRICULUM_VERSION"] = str(run["artifact_version"])

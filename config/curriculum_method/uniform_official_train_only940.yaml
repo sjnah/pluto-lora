@@ -2,7 +2,7 @@ method: uniform
 label: Uniform FT official-train-only940
 mode: uniform
 scenario_filter: uniform_train_all_official_train_only940
-validation_filter: internal_val_val14_log_disjoint_official_train_only940
+validation_filter: internal_val_all417_official_train_only940
 phase_names:
   a: stage1_raw
   b: stage2_uniform

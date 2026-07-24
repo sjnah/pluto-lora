@@ -11,6 +11,6 @@ tie_break_mode: stable_hash
 bucketization_mode: percentile_tercile
 bucket_cardinality_contract: equal_cardinality_quantile
 bucket_master_filter: uniform_train_all_official_train_only940
-validation_filter: internal_val_val14_log_disjoint_official_train_only940
+validation_filter: internal_val_all417_official_train_only940
 phase_names: {a: easy_warmup, b: hard_ramp, c: hard_replay}
 exposure: {persistent: false, max_repeat_per_near_duplicate_group: 0, max_cumulative_exposure_per_scenario: 0, max_cumulative_exposure_per_near_duplicate_group: 0}
